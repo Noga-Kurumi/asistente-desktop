@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Asistente 3D</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: transparent; }
+        canvas { display: block; }
+        #transcription-box {
+            position: absolute; bottom: -150px; right: 50px; width: 320px;
+            background: rgba(15, 15, 20, 0.9); border: 1px solid #00ffcc;
+            border-radius: 12px; padding: 15px; color: #fff;
+            font-family: 'Segoe UI', Tahoma, sans-serif; font-size: 14px;
+            box-shadow: 0px 4px 15px rgba(0,0,0,0.5);
+            transition: bottom 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            z-index: 10;
+        }
+        #transcription-box.visible { bottom: 40px; }
+        .typing-indicator { color: #00ffcc; animation: blink 1s infinite; }
+        @keyframes blink { 50% { opacity: 0; } }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.155.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.155.0/examples/jsm/",
+                "@pixiv/three-vrm": "https://unpkg.com/@pixiv/three-vrm@2.0.0/lib/three-vrm.module.js"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="transcription-box">
+        <span style="color: #888; font-size: 12px; text-transform: uppercase;">🎙️ Escuchando</span>
+        <div id="transcription-text" style="margin-top: 8px;">...</div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { VRMLoaderPlugin } from '@pixiv/three-vrm';
+
+        document.addEventListener('contextmenu', event => event.preventDefault());
+
+        const scene = new THREE.Scene();
+        const cameraZ = 5.0; 
+        const camera = new THREE.PerspectiveCamera(30, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 0, cameraZ);
+        
+        const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x000000, 0); 
+        renderer.outputColorSpace = THREE.SRGBColorSpace; 
+        document.body.appendChild(renderer.domElement);
+
+        const light = new THREE.DirectionalLight(0xffffff, 2);
+        light.position.set(1, 1, 1).normalize();
+        scene.add(light);
+        scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+
+        let currentVrm = null;
+        let analyser = null;
+        let dataArray = null;
+        let avatarState = "idle"; 
+        let avatarTargetY = -100; 
+        let avatarBaseY = 0;
+        let hideTimeout = null;
+
+        const loader = new GLTFLoader();
+        loader.register((parser) => new VRMLoaderPlugin(parser));
+        
+        loader.load('./avatar.vrm', (gltf) => {
+            currentVrm = gltf.userData.vrm;
+            scene.add(currentVrm.scene);
+            
+            const rotY = 2.80;
+            const offsetY = 1.15;
+            currentVrm.scene.rotation.y = rotY;
+            
+            const fovRad = THREE.MathUtils.degToRad(camera.fov);
+            const visibleHeight = 2 * Math.tan(fovRad / 2) * cameraZ;
+            const visibleWidth = visibleHeight * (window.innerWidth / window.innerHeight);
+            const frustumDiagonal = Math.sqrt(Math.pow(visibleWidth, 2) + Math.pow(visibleHeight, 2));
+            const finalScale = (frustumDiagonal / 0.7) * 0.65;
+            currentVrm.scene.scale.set(finalScale, finalScale, finalScale);
+            
+            const posX = (visibleWidth / 2) - (0.1 * finalScale);
+            avatarBaseY = (-visibleHeight / 2) - (offsetY * finalScale);
+            avatarTargetY = avatarBaseY - 5; 
+            currentVrm.scene.position.set(posX, avatarTargetY, 0);
+        });
+
+        const clock = new THREE.Clock();
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            if (currentVrm) {
+                currentVrm.update(delta);
+                currentVrm.scene.position.y += (avatarTargetY - currentVrm.scene.position.y) * 10 * delta;
+
+                if (avatarState === "speaking" && analyser && dataArray) {
+                    analyser.getByteFrequencyData(dataArray);
+                    let sum = 0;
+                    for(let i=0; i<dataArray.length; i++) sum += dataArray[i];
+                    let volume = sum / dataArray.length;
+                    let mouthOpen = Math.min(volume / 50, 1.0);
+                    let currentMouth = currentVrm.expressionManager.getValue('aa') || 0;
+                    currentVrm.expressionManager.setValue('aa', currentMouth + (mouthOpen - currentMouth) * 15 * delta);
+                } else {
+                    currentVrm.expressionManager.setValue('aa', 0);
+                }
+            }
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.setAvatarState = (state) => {
+            avatarState = state;
+            if(!currentVrm) return;
+            clearTimeout(hideTimeout);
+            currentVrm.expressionManager.setValue('neutral', 0);
+            currentVrm.expressionManager.setValue('happy', 0);
+
+            if(state === "thinking") {
+                avatarTargetY = avatarBaseY;
+                currentVrm.expressionManager.setValue('neutral', 1.0);
+            } else if(state === "speaking") {
+                avatarTargetY = avatarBaseY;
+                currentVrm.expressionManager.setValue('happy', 0.8);
+            } else if(state === "hidden") {
+                avatarTargetY = avatarBaseY - 5;
+            } else if(state === "idle") {
+                hideTimeout = setTimeout(() => {
+                    if (avatarState === "idle") window.setAvatarState("hidden");
+                }, 4000);
+            }
+        };
+
+        window.toggleRecordingUI = (isRecording) => {
+            const transBox = document.getElementById('transcription-box');
+            if(isRecording) {
+                window.setAvatarState("hidden");
+                transBox.classList.add('visible');
+                document.getElementById('transcription-text').innerHTML = "Escuchando... <span class='typing-indicator'>|</span>";
+            } else {
+                transBox.classList.remove('visible');
+                window.setAvatarState("thinking");
+            }
+        };
+
+        window.updateTranscription = (text) => {
+            document.getElementById('transcription-text').innerHTML = text + " <span class='typing-indicator'>|</span>";
+        };
+
+        window.apuntarFalso = () => {
+            if(!currentVrm) return;
+            const rightArm = currentVrm.humanoid.getNormalizedBoneNode('rightUpperArm');
+            if(rightArm) {
+                rightArm.rotation.z = -Math.PI / 2.5; 
+                rightArm.rotation.x = Math.PI / 6;    
+            }
+        };
+
+        // El reproductor de Base64
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        window.reproducirAudioBase64 = async (base64String) => {
+            window.setAvatarState("speaking");
+            try {
+                const binaryString = atob(base64String);
+                const len = binaryString.length;
+                const bytes = new Uint8Array(len);
+                for (let i = 0; i < len; i++) bytes[i] = binaryString.charCodeAt(i);
+                
+                const audioBuffer = await audioContext.decodeAudioData(bytes.buffer);
+                const source = audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 256; 
+                dataArray = new Uint8Array(analyser.frequencyBinCount);
+                source.connect(analyser);
+                analyser.connect(audioContext.destination);
+                
+                source.onended = () => {
+                    window.setAvatarState("idle");
+                    console.log("TTS_ENDED"); 
+                };
+                source.start(0);
+            } catch(e) { 
+                console.error(e); 
+                window.setAvatarState("idle"); 
+                console.log("TTS_ENDED"); 
+            }
+        };
+    </script>
+</body>
+</html>

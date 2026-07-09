@@ -1,0 +1,11 @@
+PySide6
+pynput
+mss
+Pillow
+faster-whisper
+sounddevice
+numpy
+anthropic
+requests
+kokoro-onnx
+soundfile
