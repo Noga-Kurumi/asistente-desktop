@@ -1,72 +1,120 @@
 import os
-import io
-import base64
-import urllib.request
+import sys
+import subprocess
 import threading
-import soundfile as sf
-from kokoro_onnx import Kokoro
+import time
+import numpy as np
 from PySide6.QtCore import QObject, Signal
 
+def _instalar_dependencias():
+    try:
+        import kokoro_onnx
+        import sounddevice
+    except ImportError:
+        print("⏳ [TTS] Instalando dependencias kokoro-onnx y sounddevice...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "kokoro-onnx", "sounddevice"])
+
+_instalar_dependencias()
+
+import sounddevice as sd
+from kokoro_onnx import Kokoro
+
 class AssistantTTS(QObject):
-    audio_ready = Signal(str)
+    speech_started = Signal()
+    speech_ended = Signal()
 
     def __init__(self):
         super().__init__()
-        self.model_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "resources", "tts"))
-        # Actualizamos a los archivos de la v1.0
-        self.model_path = os.path.join(self.model_dir, "kokoro-v1.0.onnx")
-        self.voices_path = os.path.join(self.model_dir, "voices-v1.0.json")
+        # Asumimos que los modelos están en la raíz del repo (junto a main.py)
+        self.base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        self.model_path = os.path.join(self.base_dir, "kokoro-v1.0.onnx")
+        self.model_quant_path = os.path.join(self.base_dir, "kokoro-v1.0.int8.onnx")
+        self.voices_path = os.path.join(self.base_dir, "voices-v1.0.bin")
         
         self.kokoro = None
         self.is_ready = False
         
         threading.Thread(target=self._init_engine, daemon=True).start()
 
-    def _download_file(self, url, dest):
-        # Camuflaje anti-bots para que no nos tiren 403 o 404 por rashear
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req) as response, open(dest, 'wb') as out_file:
-            out_file.write(response.read())
-
     def _init_engine(self):
-        os.makedirs(self.model_dir, exist_ok=True)
+        inicio = time.perf_counter()
         
-        if not os.path.exists(self.model_path):
-            print("⏳ [TTS] Descargando modelo ONNX v1.0 (82MB)... Bancame.")
-            try:
-                self._download_file("https://github.com/thewh1teagle/kokoro-onnx/releases/download/model/kokoro-v1.0.onnx", self.model_path)
-            except Exception:
-                print("⚠️ GitHub tiró error. Bajando desde el mirror de HuggingFace...")
-                self._download_file("https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/kokoro-v1.0.onnx", self.model_path)
+        # Prioridad al modelo normal, fallback al quantizado
+        modelo_a_usar = self.model_path
+        if not os.path.exists(self.model_path) and os.path.exists(self.model_quant_path):
+            modelo_a_usar = self.model_quant_path
             
-        if not os.path.exists(self.voices_path):
-            print("⏳ [TTS] Descargando perfiles de voces v1.0...")
-            try:
-                self._download_file("https://github.com/thewh1teagle/kokoro-onnx/releases/download/model/voices-v1.0.json", self.voices_path)
-            except Exception:
-                print("⚠️ GitHub tiró error en voces. Bajando desde el mirror de HuggingFace...")
-                self._download_file("https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices.json", self.voices_path)
+        if not os.path.exists(modelo_a_usar) or not os.path.exists(self.voices_path):
+            print(f"❌ [TTS] Falta el modelo o las voces en la raíz del proyecto")
+            return
 
-        print("🧠 [TTS] Cargando motor Kokoro v1.0 en CPU...")
         try:
-            self.kokoro = Kokoro(self.model_path, self.voices_path)
+            self.kokoro = Kokoro(modelo_a_usar, self.voices_path)
+            
+            # Warm-up para matar la latencia de la primera ejecución
+            self.kokoro.create("a", voice="af_bella", speed=1.0, lang="es")
+            
+            fin = time.perf_counter()
             self.is_ready = True
-            print("✅ [TTS] Motor de voz nativo 100% operativo.")
+            print(f"✅ [TTS] Motor listo en {(fin-inicio):.2f}s")
         except Exception as e:
-            print(f"❌ [TTS] Error al cargar el motor: {e}")
+            print(f"❌ [TTS] Error al cargar: {e}")
 
-    def process_text_async(self, text, voice="es_gs"):
+    def process_text_async(self, text, voice="af_bella"):
         if not self.is_ready or not text.strip():
             return
-        threading.Thread(target=self._generate_and_emit, args=(text, voice), daemon=True).start()
+        threading.Thread(target=self._generate_and_play, args=(text, voice), daemon=True).start()
 
-    def _generate_and_emit(self, text, voice):
+    def _generate_and_play(self, text, voice):
         try:
-            # Generación en tiempo récord
             samples, sample_rate = self.kokoro.create(text, voice=voice, speed=1.0, lang="es")
-            buffer = io.BytesIO()
-            sf.write(buffer, samples, sample_rate, format='WAV')
-            audio_b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-            self.audio_ready.emit(audio_b64)
+            
+            self.speech_started.emit()
+            sd.play(samples, sample_rate)
+            sd.wait() # Traba el hilo hasta que termine el audio
+            self.speech_ended.emit()
+            
         except Exception as e:
-            print(f"❌ [TTS] Error generando voz: {e}")
+            print(f"❌ [TTS] Error en generación/reproducción: {e}")
+            self.speech_ended.emit()
+
+def get_available_voices(voices_path=None):
+    """Extrae la lista de voces disponibles desde voices-v1.0.bin con sus idiomas."""
+    if voices_path is None:
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        voices_path = os.path.join(base_dir, "voices-v1.0.bin")
+    
+    if not os.path.exists(voices_path):
+        return []
+    
+    try:
+        voices = np.load(voices_path)
+        voice_names = list(sorted(voices.keys()))
+        
+        lang_map = {
+            'a': 'Inglés (US)',
+            'b': 'Inglés (UK)', 
+            'e': 'Español',
+            'f': 'Francés',
+            'i': 'Italiano',
+            'j': 'Japonés',
+            'p': 'Portugués',
+            'h': 'Hindi',
+            'k': 'Coreano',
+            'z': 'Chino'
+        }
+        
+        formatted_voices = []
+        for voice in voice_names:
+            if len(voice) >= 2:
+                prefix = voice[0].lower()
+                lang = lang_map.get(prefix, 'Desconocido')
+                formatted_name = f"{voice} - {lang}"
+                formatted_voices.append((voice, formatted_name))
+            else:
+                formatted_voices.append((voice, voice))
+        
+        return formatted_voices
+    except Exception as e:
+        print(f"❌ [TTS] Error al cargar voces: {e}")
+        return []

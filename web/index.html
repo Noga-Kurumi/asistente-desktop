@@ -12,10 +12,20 @@
             border-radius: 12px; padding: 15px; color: #fff;
             font-family: 'Segoe UI', Tahoma, sans-serif; font-size: 14px;
             box-shadow: 0px 4px 15px rgba(0,0,0,0.5);
-            transition: bottom 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            transition: bottom 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
             z-index: 10;
         }
         #transcription-box.visible { bottom: 40px; }
+        #ready-notification {
+            position: absolute; bottom: -150px; right: 50px; width: 320px;
+            background: rgba(15, 15, 20, 0.9); border: 1px solid #00ff66;
+            border-radius: 12px; padding: 15px; color: #fff;
+            font-family: 'Segoe UI', Tahoma, sans-serif; font-size: 14px;
+            box-shadow: 0px 4px 15px rgba(0,0,0,0.5);
+            transition: bottom 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            z-index: 10;
+        }
+        #ready-notification.visible { bottom: 40px; }
         .typing-indicator { color: #00ffcc; animation: blink 1s infinite; }
         @keyframes blink { 50% { opacity: 0; } }
     </style>
@@ -28,11 +38,89 @@
             }
         }
     </script>
+
+    <script>
+        window.avatarState = "hidden";
+        let boxTimeout = null; // Guardamos el timer de la caja aquí
+        console.log("🎭 [WEB] Sistema de avatar inicializado, estado:", window.avatarState);
+        
+        window.toggleRecordingUI = (isRecording) => {
+            const transBox = document.getElementById('transcription-box');
+            if (!transBox) return;
+            
+            clearTimeout(boxTimeout); // Cancelamos cualquier cierre pendiente si volvés a tocar la tecla
+            
+            if (isRecording) {
+                window.setAvatarState("hidden");
+                transBox.classList.add('visible');
+                document.getElementById('transcription-text').innerHTML = "Escuchando... <span class='typing-indicator'>|</span>";
+            } else {
+                // Ocultar la caja de transcripción
+                boxTimeout = setTimeout(() => {
+                    transBox.classList.remove('visible');
+                }, 2000);
+            }
+        };
+
+        window.updateTranscription = (text) => {
+            console.log("🎭 [WEB] updateTranscription llamado con:", text);
+            const transText = document.getElementById('transcription-text');
+            if (transText) {
+                transText.innerHTML = text + " <span class='typing-indicator'>|</span>";
+            } else {
+                console.error("🎭 [WEB] ERROR: Elemento transcription-text no encontrado");
+            }
+        };
+
+        window.setAvatarState = (state) => { 
+            console.log("🎭 [WEB] setAvatarState llamado con:", state);
+            window.avatarState = state; 
+        };
+        window.apuntarFalso = () => {
+            console.log("🎭 [WEB] apuntarFalso llamado");
+        };
+        window.setAvatarPath = (path) => {
+            console.log("🎭 [WEB] setAvatarPath llamado con:", path);
+            window.avatarPath = path;
+        };
+        window.setAvatarName = (name) => {
+            console.log("🎭 [WEB] setAvatarName llamado con:", name);
+            window.avatarName = name;
+            const nameEl = document.getElementById('avatar-name');
+            if (nameEl) {
+                nameEl.textContent = name;
+            }
+        };
+        window.setHotkey = (hotkey) => {
+            console.log("🎭 [WEB] setHotkey llamado con:", hotkey);
+            window.hotkey = hotkey;
+            const hotkeyEl = document.getElementById('hotkey-text');
+            if (hotkeyEl) {
+                hotkeyEl.textContent = hotkey;
+            }
+        };
+        window.hideReadyNotification = () => {
+            const notif = document.getElementById('ready-notification');
+            if (notif) {
+                notif.classList.remove('visible');
+                console.log("🎭 [WEB] Notificación ocultada manualmente");
+            }
+            // Cancelar el timer si existe
+            if (window.readyNotificationTimer) {
+                clearTimeout(window.readyNotificationTimer);
+                console.log("🎭 [WEB] Timer cancelado");
+            }
+        };
+    </script>
 </head>
 <body>
     <div id="transcription-box">
         <span style="color: #888; font-size: 12px; text-transform: uppercase;">🎙️ Escuchando</span>
         <div id="transcription-text" style="margin-top: 8px;">...</div>
+    </div>
+    <div id="ready-notification">
+        <span style="color: #fff; font-size: 16px; font-weight: bold;">✅ Sistema Listo</span>
+        <div style="margin-top: 8px; color: #eee;">Presiona <span id="hotkey-text">Alt+R</span> para hablar con <span id="avatar-name">Kurumi</span></div>
     </div>
 
     <script type="module">
@@ -40,6 +128,7 @@
         import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
         import { VRMLoaderPlugin } from '@pixiv/three-vrm';
 
+        console.log("🎭 [WEB] Módulos ES6 cargados correctamente");
         document.addEventListener('contextmenu', event => event.preventDefault());
 
         const scene = new THREE.Scene();
@@ -59,19 +148,38 @@
         scene.add(new THREE.AmbientLight(0xffffff, 0.8));
 
         let currentVrm = null;
-        let analyser = null;
-        let dataArray = null;
-        let avatarState = "idle"; 
-        let avatarTargetY = -100; 
+        let avatarTargetY = 0; 
         let avatarBaseY = 0;
         let hideTimeout = null;
 
         const loader = new GLTFLoader();
         loader.register((parser) => new VRMLoaderPlugin(parser));
         
-        loader.load('./avatar.vrm', (gltf) => {
+        // Usar el path del avatar configurado o fallback a avatar.vrm
+        const avatarPath = window.avatarPath || './avatar.vrm';
+        console.log("🎭 [WEB] Loader configurado, cargando avatar:", avatarPath);
+        
+        loader.load(avatarPath, (gltf) => {
+            console.log("🎭 [WEB] Avatar VRM cargado exitosamente");
             currentVrm = gltf.userData.vrm;
             scene.add(currentVrm.scene);
+            
+            // Mostrar notificación de sistema listo
+            const notif = document.getElementById('ready-notification');
+            if (notif) {
+                notif.classList.add('visible');
+                console.log("🎭 [WEB] Notificación mostrada, timer de 5s iniciado");
+                // Ocultar después de 5 segundos
+                window.readyNotificationTimer = setTimeout(() => {
+                    console.log("🎭 [WEB] Timer ejecutado, ocultando notificación");
+                    if (notif.classList.contains('visible')) {
+                        notif.classList.remove('visible');
+                    }
+                }, 5000);
+            }
+            
+            // Notificar a Python que el sistema está listo
+            window.systemReady = true;
             
             const rotY = 2.80;
             const offsetY = 1.15;
@@ -86,8 +194,12 @@
             
             const posX = (visibleWidth / 2) - (0.1 * finalScale);
             avatarBaseY = (-visibleHeight / 2) - (offsetY * finalScale);
-            avatarTargetY = avatarBaseY - 5; 
+            avatarTargetY = avatarBaseY; 
             currentVrm.scene.position.set(posX, avatarTargetY, 0);
+
+            window.setAvatarState(window.avatarState);
+        }, undefined, (error) => {
+            console.error("🎭 [WEB] ERROR cargando avatar VRM:", error);
         });
 
         const clock = new THREE.Clock();
@@ -95,15 +207,13 @@
             requestAnimationFrame(animate);
             const delta = clock.getDelta();
             if (currentVrm) {
+                const currentY = currentVrm.scene.position.y;
                 currentVrm.update(delta);
                 currentVrm.scene.position.y += (avatarTargetY - currentVrm.scene.position.y) * 10 * delta;
 
-                if (avatarState === "speaking" && analyser && dataArray) {
-                    analyser.getByteFrequencyData(dataArray);
-                    let sum = 0;
-                    for(let i=0; i<dataArray.length; i++) sum += dataArray[i];
-                    let volume = sum / dataArray.length;
-                    let mouthOpen = Math.min(volume / 50, 1.0);
+                if (window.avatarState === "speaking") {
+                    let timeNow = Date.now() * 0.015;
+                    let mouthOpen = (Math.sin(timeNow) * 0.5 + 0.5) * 0.8;
                     let currentMouth = currentVrm.expressionManager.getValue('aa') || 0;
                     currentVrm.expressionManager.setValue('aa', currentMouth + (mouthOpen - currentMouth) * 15 * delta);
                 } else {
@@ -115,8 +225,11 @@
         animate();
 
         window.setAvatarState = (state) => {
-            avatarState = state;
-            if(!currentVrm) return;
+            window.avatarState = state;
+            if(!currentVrm) {
+                console.warn("🎭 [WEB] setAvatarState: currentVrm es null, ignorando");
+                return;
+            }
             clearTimeout(hideTimeout);
             currentVrm.expressionManager.setValue('neutral', 0);
             currentVrm.expressionManager.setValue('happy', 0);
@@ -130,26 +243,12 @@
             } else if(state === "hidden") {
                 avatarTargetY = avatarBaseY - 5;
             } else if(state === "idle") {
+                avatarTargetY = avatarBaseY;
+                currentVrm.expressionManager.setValue('neutral', 0.2);
                 hideTimeout = setTimeout(() => {
-                    if (avatarState === "idle") window.setAvatarState("hidden");
+                    if (window.avatarState === "idle") window.setAvatarState("hidden");
                 }, 4000);
             }
-        };
-
-        window.toggleRecordingUI = (isRecording) => {
-            const transBox = document.getElementById('transcription-box');
-            if(isRecording) {
-                window.setAvatarState("hidden");
-                transBox.classList.add('visible');
-                document.getElementById('transcription-text').innerHTML = "Escuchando... <span class='typing-indicator'>|</span>";
-            } else {
-                transBox.classList.remove('visible');
-                window.setAvatarState("thinking");
-            }
-        };
-
-        window.updateTranscription = (text) => {
-            document.getElementById('transcription-text').innerHTML = text + " <span class='typing-indicator'>|</span>";
         };
 
         window.apuntarFalso = () => {
@@ -158,38 +257,6 @@
             if(rightArm) {
                 rightArm.rotation.z = -Math.PI / 2.5; 
                 rightArm.rotation.x = Math.PI / 6;    
-            }
-        };
-
-        // El reproductor de Base64
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        window.reproducirAudioBase64 = async (base64String) => {
-            window.setAvatarState("speaking");
-            try {
-                const binaryString = atob(base64String);
-                const len = binaryString.length;
-                const bytes = new Uint8Array(len);
-                for (let i = 0; i < len; i++) bytes[i] = binaryString.charCodeAt(i);
-                
-                const audioBuffer = await audioContext.decodeAudioData(bytes.buffer);
-                const source = audioContext.createBufferSource();
-                source.buffer = audioBuffer;
-                
-                analyser = audioContext.createAnalyser();
-                analyser.fftSize = 256; 
-                dataArray = new Uint8Array(analyser.frequencyBinCount);
-                source.connect(analyser);
-                analyser.connect(audioContext.destination);
-                
-                source.onended = () => {
-                    window.setAvatarState("idle");
-                    console.log("TTS_ENDED"); 
-                };
-                source.start(0);
-            } catch(e) { 
-                console.error(e); 
-                window.setAvatarState("idle"); 
-                console.log("TTS_ENDED"); 
             }
         };
     </script>

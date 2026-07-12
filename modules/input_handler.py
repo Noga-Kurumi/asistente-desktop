@@ -22,7 +22,7 @@ class VoiceInputManager(QObject):
         super().__init__()
         self.hotkey = hotkey
         self.is_recording = False
-        self.is_locked = False # El candado del pipeline
+        self.is_locked = True # Bloqueado inicialmente hasta que el sistema cargue
         self.start_time = 0
         self.audio_buffer = []
         

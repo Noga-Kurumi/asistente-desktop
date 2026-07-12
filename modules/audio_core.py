@@ -26,15 +26,12 @@ class AssistantAudioCore(QObject):
         return {}
 
     def process_voice_input(self, audio_array):
-        print(f"⏱️ [PROFILER 1] Soltaste la tecla. Mandando audio al hilo de Whisper. t={time.time()}")
         threading.Thread(target=self._final_transcribe_thread, args=(audio_array,), daemon=True).start()
 
     def _final_transcribe_thread(self, audio_array):
-        print(f"⏱️ [PROFILER 2] Hilo de Whisper arrancó. Procesando inferencia... t={time.time()}")
         try:
             segments, _ = self.whisper.transcribe(audio_array, language="es", beam_size=1, condition_on_previous_text=False)
             text = "".join([segment.text for segment in segments]).strip()
-            print(f"⏱️ [PROFILER 3] Whisper terminó la transcripción. t={time.time()}")
             self.text_transcribed.emit(text)
         except Exception as e:
             print(f"❌ [AUDIO_CORE] Error: {e}")

@@ -13,57 +13,71 @@ def is_in_venv():
     """Verifica si estamos corriendo dentro del entorno virtual."""
     return sys.prefix != sys.base_prefix
 
-def create_and_relaunch():
-    """Crea el venv, instala dependencias y se vuelve a ejecutar a sí mismo."""
+def get_venv_python():
+    """Devuelve la ruta exacta del Python dentro del venv dependiendo del SO."""
+    if os.name == 'nt': # Windows
+        return os.path.join(VENV_DIR, 'Scripts', 'python.exe')
+    return os.path.join(VENV_DIR, 'bin', 'python')
+
+def setup_venv():
+    """Crea el venv e instala dependencias. SOLO se llama si el venv no existe."""
     print("🚀 [BOOT] Creando entorno virtual aislado...")
-    builder = venv.EnvBuilder(with_pip=True, clear=True)
+    builder = venv.EnvBuilder(with_pip=True)
     builder.create(VENV_DIR)
 
-    # Determinar el ejecutable de Python del venv
-    if os.name == 'nt': # Windows
-        python_executable = os.path.join(VENV_DIR, 'Scripts', 'python.exe')
-    else: # Mac/Linux
-        python_executable = os.path.join(VENV_DIR, 'bin', 'python')
+    python_executable = get_venv_python()
 
     print("📦 [BOOT] Actualizando pip y herramientas base...")
     subprocess.check_call([python_executable, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
 
-    print("📦 [BOOT] Instalando dependencias (esto puede tardar un toque)...")
-    # El flag --prefer-binary evita que intente compilar librerías complejas como 'av' desde cero
+    print("📦 [BOOT] Instalando dependencias...")
     subprocess.check_call([python_executable, "-m", "pip", "install", "-r", REQUIREMENTS, "--prefer-binary"])
-    
-    print("✅ [BOOT] Entorno listo. Relanzando...")
-    # Relanzar este mismo script pero desde el venv
+
+def relaunch_in_venv():
+    """Corta la ejecución actual y la reinicia usando el Python del venv."""
+    python_executable = get_venv_python()
+    print("🔄 [BOOT] Entorno detectado. Relanzando en aislamiento...")
     os.execv(python_executable, [python_executable] + sys.argv)
 
 def check_config():
-    """Verifica si el config.json tiene la API Key. Si no, levanta setup.py."""
+    """Verifica si el config.json tiene todos los campos obligatorios."""
     if not os.path.exists(CONFIG_FILE):
         return False
         
     try:
         with open(CONFIG_FILE, 'r') as f:
             config = json.load(f)
-            if not config.get("api_key") or config.get("api_key") == "":
-                return False
+            # Verificar campos obligatorios (api_key NO es obligatorio)
+            required_fields = ["username", "avatar_name", "active_avatar", "active_voice"]
+            for field in required_fields:
+                if not config.get(field) or config.get(field) == "":
+                    return False
     except Exception:
         return False
         
     return True
 
 def main():
+    # 1. Si NO estamos en el venv, tenemos que entrar.
     if not is_in_venv():
-        create_and_relaunch()
-        return
+        # Si el ejecutable no existe, armamos todo el setup primero
+        if not os.path.exists(get_venv_python()):
+            setup_venv()
+        
+        # Una vez que aseguramos que el venv existe, nos metemos ahí
+        relaunch_in_venv()
+        return # Técnicamente os.execv frena todo, pero el return es buena práctica
 
+    # --- A PARTIR DE ACÁ, YA ESTAMOS 100% ADENTRO DEL VENV ---
+    
     print("🔍 [BOOT] Chequeando configuraciones...")
     if not check_config():
-        print("⚠️ [BOOT] Faltan datos. Abriendo panel de configuración (podés cerrarlo y seguir igual)...")
+        print("⚠️ [BOOT] Faltan datos. Abriendo panel de configuración...")
         import setup
         setup.run_setup_window()
 
     print("🔥 [BOOT] Todo en verde. Levantando el orquestador principal...")
-    import main # Llamamos al archivo central que vamos a crear ahora
+    import main # Llamamos al archivo central
     main.run_app()
 
 if __name__ == "__main__":

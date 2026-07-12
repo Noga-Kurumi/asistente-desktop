@@ -1,14 +1,33 @@
 import os
 import sys
 import json
-import time
+import re
 from pynput import keyboard
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
                                 QLabel, QLineEdit, QTextEdit, QCheckBox, QPushButton, 
                                 QComboBox, QMessageBox)
 from PySide6.QtCore import Qt, QObject, Signal
+from PySide6.QtGui import QIcon
 
-CONFIG_FILE = "config.json"
+# Importar función para obtener voces disponibles
+from modules.tts_core import get_available_voices
+
+# Usar ruta absoluta para config.json
+CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
+
+# Regex para detectar proveedores de API
+REGEX_ANTHROPIC = r"^sk-ant-(?:api\d{2}|oat\d{2}|[A-Za-z0-9_-]+)-[A-Za-z0-9_-]{40,}$"
+REGEX_GEMINI = r"^(?:AIzaSy[A-Za-z0-9_-]{33}|AQ\.[A-Za-z0-9_-]+)$"
+
+def detect_provider(api_key):
+    """Detecta el proveedor de API basado en el formato de la clave."""
+    if not api_key or not api_key.strip():
+        return None
+    if re.match(REGEX_ANTHROPIC, api_key.strip()):
+        return "anthropic"
+    if re.match(REGEX_GEMINI, api_key.strip()):
+        return "gemini"
+    return None
 
 class KeyCatcher(QObject):
     key_caught = Signal(str)
@@ -32,11 +51,16 @@ class KeyCatcher(QObject):
         return False
 
 class SetupWindow(QWidget):
-    def __init__(self):
+    config_saved = Signal()  # Señal para notificar que se guardó la configuración
+    
+    def __init__(self, from_system_tray=False):
         super().__init__()
         self.setWindowTitle("Configuración del Asistente")
+        self.setWindowIcon(QIcon("app.ico"))
         self.resize(400, 520)
         self.config_data = self.load_config()
+        self.is_first_run = not os.path.exists(CONFIG_FILE)
+        self.from_system_tray = from_system_tray  # True si se abrió desde system tray, False si fue por falta de datos
         
         self.catcher = KeyCatcher()
         self.catcher.key_caught.connect(self.on_hotkey_caught)
@@ -48,7 +72,6 @@ class SetupWindow(QWidget):
             "api_key": "", 
             "active_avatar": "", 
             "active_voice": "", 
-            "use_gpu": True, 
             "launch_with_system": False,
             "hotkey": "Key.alt_r",
             "custom_instructions": ""
@@ -70,10 +93,23 @@ class SetupWindow(QWidget):
         self.input_user = QLineEdit(self.config_data.get("username", ""))
         layout.addWidget(self.input_user)
 
-        layout.addWidget(QLabel("Anthropic API Key:"))
+        layout.addWidget(QLabel("Nombre del Avatar:"))
+        self.input_avatar_name = QLineEdit(self.config_data.get("avatar_name", "Kurumi"))
+        layout.addWidget(self.input_avatar_name)
+
+        layout.addWidget(QLabel("API Key:"))
         self.input_api = QLineEdit(self.config_data.get("api_key", ""))
         self.input_api.setEchoMode(QLineEdit.EchoMode.Password)
+        self.input_api.textChanged.connect(self.on_api_key_changed)
         layout.addWidget(self.input_api)
+        
+        # Label para mostrar proveedor detectado
+        self.label_provider = QLabel("No hay clave")
+        self.label_provider.setStyleSheet("color: #888; font-size: 11px;")
+        layout.addWidget(self.label_provider)
+        
+        # Inicializar detección de proveedor
+        self.on_api_key_changed(self.input_api.text())
 
         layout.addWidget(QLabel("Tecla de Grabación (Hold-to-Talk):"))
         self.btn_hotkey = QPushButton(f"Capturar Tecla: [ {self.config_data.get('hotkey')} ]")
@@ -96,10 +132,6 @@ class SetupWindow(QWidget):
         self.populate_voices_combo(self.combo_voice, self.config_data.get("active_voice", ""))
         layout.addWidget(self.combo_voice)
 
-        self.check_gpu = QCheckBox("Usar Aceleración por GPU (CUDA)")
-        self.check_gpu.setChecked(self.config_data.get("use_gpu", True))
-        layout.addWidget(self.check_gpu)
-
         self.check_startup = QCheckBox("Iniciar con Windows")
         self.check_startup.setChecked(self.config_data.get("launch_with_system", False))
         layout.addWidget(self.check_startup)
@@ -114,31 +146,42 @@ class SetupWindow(QWidget):
     def populate_combo(self, combo, folder, extension, current_val):
         """Función original para poblar los VRM desde la carpeta."""
         combo.addItem("Ninguno seleccionado")
-        if os.path.exists(folder):
-            files = [f for f in os.listdir(folder) if f.endswith(extension)]
+        # Usar ruta absoluta para la carpeta
+        folder_path = os.path.join(os.path.dirname(__file__), folder)
+        if os.path.exists(folder_path):
+            files = [f for f in os.listdir(folder_path) if f.endswith(extension)]
             for file in files:
                 combo.addItem(file)
                 if file == current_val:
                     combo.setCurrentText(file)
 
     def populate_voices_combo(self, combo, current_val):
-        voces_js = [
-            "es_gs", "es_am", "es_sz", "es_ug",
-            "af_heart", "af_alloy", "af_aoede", "af_bella", "af_jessica", "af_kore", 
-            "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky", "am_adam", 
-            "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael", "am_onyx", 
-            "am_puck", "am_santa", "bf_emma", "bf_isabella", "bm_george", "bm_lewis", 
-            "bf_alice", "bf_lily", "bm_daniel", "bm_fable"
-        ]
+        """Poblar el combo con voces dinámicas desde voices-v1.0.bin"""
+        # Obtener voces disponibles del archivo binario
+        voices = get_available_voices()
         
-        # Si está vacío o hay basura vieja, forzamos un default
-        if not current_val or current_val not in voces_js:
+        if not voices:
+            # Fallback si no se pueden cargar las voces
+            combo.addItem("Error cargando voces")
+            return
+        
+        # Si está vacío o hay basura vieja, forzamos un default (af_bella - Inglés US)
+        if not current_val or current_val not in [v[0] for v in voices]:
             current_val = "af_bella"
-
-        for v in voces_js:
-            combo.addItem(v)
-            
-        combo.setCurrentText(current_val)
+        
+        # Agregar voces al combo con formato "nombre - idioma"
+        for voice_id, voice_name in voices:
+            combo.addItem(voice_name, voice_id)  # voice_name como texto, voice_id como userData
+        
+        # Seleccionar la voz actual por userData
+        index = combo.findData(current_val)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        else:
+            # Fallback a af_bella si no se encuentra
+            index = combo.findData("af_bella")
+            if index >= 0:
+                combo.setCurrentIndex(index)
 
     def start_key_capture(self):
         self.btn_hotkey.setText("Escuchando... Presioná una tecla")
@@ -152,18 +195,43 @@ class SetupWindow(QWidget):
         self.btn_hotkey.setEnabled(True)
         self.btn_hotkey.setStyleSheet("")
 
+    def on_api_key_changed(self, text):
+        """Detecta el proveedor de API y actualiza el label."""
+        provider = detect_provider(text)
+        if provider == "anthropic":
+            self.label_provider.setText("✓ Anthropic detectado")
+            self.label_provider.setStyleSheet("color: #4CAF50; font-size: 11px; font-weight: bold;")
+        elif provider == "gemini":
+            self.label_provider.setText("✓ Gemini detectado")
+            self.label_provider.setStyleSheet("color: #4CAF50; font-size: 11px; font-weight: bold;")
+        elif text.strip():
+            self.label_provider.setText("✗ Clave inválida")
+            self.label_provider.setStyleSheet("color: #F44336; font-size: 11px;")
+        else:
+            self.label_provider.setText("No hay clave")
+            self.label_provider.setStyleSheet("color: #888; font-size: 11px;")
+
     def save_config(self):
+        # Guardar configuración anterior para detectar cambios
+        old_config = self.config_data.copy() if os.path.exists(CONFIG_FILE) else {}
+        
         self.config_data["username"] = self.input_user.text()
+        self.config_data["avatar_name"] = self.input_avatar_name.text()
         self.config_data["api_key"] = self.input_api.text()
+        self.config_data["api_provider"] = detect_provider(self.input_api.text()) or ""
         self.config_data["custom_instructions"] = self.input_custom.toPlainText().strip()
         
         avatar_val = self.combo_avatar.currentText()
-        self.config_data["active_avatar"] = avatar_val if avatar_val != "Ninguno seleccionado" else ""
+        if avatar_val == "Ninguno seleccionado":
+            QMessageBox.warning(self, "Error", "Debes seleccionar un avatar para continuar.")
+            return
+        self.config_data["active_avatar"] = avatar_val
         
-        voice_val = self.combo_voice.currentText()
-        self.config_data["active_voice"] = voice_val if voice_val != "Ninguno seleccionado" else ""
+        voice_val = self.combo_voice.currentData()  # Obtener el ID de la voz (userData)
+        if voice_val is None:
+            voice_val = self.combo_voice.currentText()
+        self.config_data["active_voice"] = voice_val if voice_val and voice_val != "Error cargando voces" else ""
         
-        self.config_data["use_gpu"] = self.check_gpu.isChecked()
         self.config_data["launch_with_system"] = self.check_startup.isChecked()
 
         with open(CONFIG_FILE, 'w') as f:
@@ -171,8 +239,38 @@ class SetupWindow(QWidget):
 
         self.handle_startup_os(self.config_data["launch_with_system"])
 
-        QMessageBox.information(self, "Guardado", "Configuración actualizada.")
-        self.close()
+        # Detectar si hubo cambios
+        config_changed = old_config != self.config_data
+        
+        # Verificar campos obligatorios (api_key NO es obligatorio)
+        required_fields = ["username", "avatar_name", "active_avatar", "active_voice"]
+        missing_fields = [field for field in required_fields if not self.config_data.get(field) or self.config_data.get(field) == ""]
+        
+        if missing_fields:
+            QMessageBox.warning(self, "Error", f"Faltan campos obligatorios: {', '.join(missing_fields)}")
+            return
+        
+        # Advertir si no hay API key pero permitir guardar
+        if not self.config_data.get("api_key") or self.config_data.get("api_key") == "":
+            QMessageBox.warning(self, "Advertencia", "No has configurado una API Key. El software no responderá a consultas sin una clave válida.")
+        
+        # Comportamiento según origen
+        if not self.from_system_tray:
+            # Se abrió por falta de datos - solo cerrar sin mensajes
+            self.close()
+        else:
+            # Se abrió desde system tray
+            if config_changed:
+                QMessageBox.information(
+                    self, 
+                    "Reiniciando Aplicación", 
+                    "La configuración ha cambiado. El software se reiniciará para aplicar los cambios."
+                )
+                self.config_saved.emit()  # Emitir señal para que main.py reinicie
+                self.close()
+                return
+            # Si no hubo cambios, solo cerrar
+            self.close()
 
     def handle_startup_os(self, enable):
         if os.name == 'nt':
@@ -195,7 +293,7 @@ class SetupWindow(QWidget):
 
 _setup_window_instance = None
 
-def run_setup_window():
+def run_setup_window(from_system_tray=False):
     global _setup_window_instance
     app = QApplication.instance()
     needs_exec = False
@@ -203,10 +301,12 @@ def run_setup_window():
         app = QApplication(sys.argv)
         needs_exec = True
         
-    _setup_window_instance = SetupWindow()
+    _setup_window_instance = SetupWindow(from_system_tray=from_system_tray)
     _setup_window_instance.show()
     if needs_exec:
         app.exec()
+    
+    return _setup_window_instance
 
 if __name__ == "__main__":
     run_setup_window()
