@@ -100,13 +100,101 @@
         "Qué onda. Ya extrañaba este código. Procesando."
     ],
     "fallbacks": {
-        "ERR_QUOTA": "Che, me parece que te quedaste sin créditos en la API. Revisá la billetera.",
-        "ERR_AUTH": "Tiró error de autenticación. Fijate si la API Key está bien puesta.",
-        "ERR_NETWORK": "Cero conexión, rey. Fijate si tenés internet o si se cayó el server.",
-        "ERR_SCREENPIPE": "No encuentro a Screenpipe. Acordate de dejarlo corriendo de fondo.",
-        "ERR_TIMEOUT": "La API está tardando una banda y tiró timeout. Intentá de nuevo.",
-        "ERR_MIC": "No te escuché nada. Fijate si el micrófono está muteado o mal configurado.",
-        "ERR_GENERIC": "Algo explotó en el backend y no sé qué es. Revisá la consola por las dudas.",
-        "ERR_NO_API": "No configuraste la clave de la API. Revisá los ajustes."
-    }
+            "ERR_QUOTA": [
+                "Che, me parece que te quedaste sin créditos en la API. Revisá la billetera.",
+                "Saltó la ficha en la API, estamos sin saldo. Toca gatillar, rey.",
+                "Rechazada la tarjeta virtual. La API dice que no hay plata.",
+                "Se nos acabó la nafta en la API. Revisá los créditos antes de que me apague.",
+                "Bro, la API me cortó el rostro por falta de pago. Fijate eso.",
+                "Cero saldo, pa. Estamos mendigando tokens a esta altura.",
+                "Error de cuota. Literalmente me cerraron la puerta en la cara por pobre.",
+                "Secos de créditos. Pasá la tarjeta por la API y volvemos a arrancar.",
+                "Me tiraron un 429 de pobreza. Recargá la cuenta de la API, dale.",
+                "Sin tokens no hay paraíso. La API dice que fundimos biela."
+            ],
+            "ERR_AUTH": [
+                "Tiró error de autenticación. Fijate si la API Key está bien puesta.",
+                "Esa API Key no la agarra ni a palos. Le pifiaste a algún caracter fijo.",
+                "Me rebotó la llave. Chequeá que la API Key sea la posta.",
+                "Permiso denegado, rey. Pusiste mal la API Key o te la revocaron.",
+                "Error 401 de una. Esa API Key tiene menos validez que billete del monopoly.",
+                "No me dejan pasar. Dice el patovica de la API que tu Key es trucha.",
+                "Che, la contraseña de la API está mal. Revisá la config.",
+                "Autenticación fallida. O copiaste mal la Key, o nos hackearon, vos fijate.",
+                "Rebotazo en la API. Esa llave no abre nada, mirá el json.",
+                "Bro, la API Key que me diste no sirve. Actualizala."
+            ],
+            "ERR_NETWORK": [
+                "Cero conexión, rey. Fijate si tenés internet o si se cayó el server.",
+                "Pinchó el wifi o el server de la API palmó. No salgo a internet.",
+                "Estamos más aislados que náufrago. Cero red por acá.",
+                "Murió la conexión. O te quedaste sin internet, o la API está tomando mate.",
+                "Time out de red. Revisá el router porque yo no veo nada.",
+                "Fijate el cable de red, pa. No me puedo comunicar con el backend.",
+                "Se cortó la luz digital. No hay conexión con el servidor remoto.",
+                "La red está re inestable, tiró error al conectar. Probá de nuevo.",
+                "No hay internet, bro. O la API se fue a dormir. F.",
+                "Desconectados del mundo. Chequeá tu conexión que por acá no pasa un paquete."
+            ],
+            "ERR_SCREENPIPE": [
+                "No encuentro a Screenpipe. Acordate de dejarlo corriendo de fondo.",
+                "Che, Screenpipe no responde. ¿Lo abriste o te re olvidaste?",
+                "Buscando a Screenpipe... y nada. Levantá el proceso, rey.",
+                "Me falta el ojo de Screenpipe. Activalo que estoy ciego del pasado.",
+                "El daemon de Screenpipe está re off. Tirale un run, dale.",
+                "No me puedo conectar al puerto de Screenpipe. ¿Se cayó?",
+                "Amigo, Screenpipe no está corriendo. Así no puedo leerte los logs.",
+                "Screenpipe brilla por su ausencia. Levantalo en segundo plano.",
+                "Chequeá la terminal de Screenpipe, me tiró error al conectar.",
+                "No hay señales de vida de Screenpipe. Prendelo que lo necesito."
+            ],
+            "ERR_TIMEOUT": [
+                "La API está tardando una banda y tiró timeout. Intentá de nuevo.",
+                "El server se quedó pensando en la inmortalidad del cangrejo. Timeout, pa.",
+                "Mucho lag en el cerebro central. Tiró timeout de una.",
+                "Me aburrí de esperar a la API. Tiró timeout, mandale de vuelta.",
+                "Timeout, rey. El servidor de la API está más lento que tortuga renga.",
+                "Colapsó la espera. La API no me responde, probá en un ratito.",
+                "La API me dejó en visto. Excedimos el tiempo límite de espera.",
+                "Se colgó el proveedor. Timeout al canto. Hagamos otro intento.",
+                "Demasiado tiempo para responder. La API debe estar procesando algo pesado. Corté.",
+                "Ping por las nubes, la API tiró timeout. Volvé a tirarme la consulta."
+            ],
+            "ERR_MIC": [
+                "No te escuché nada. Fijate si el micrófono está muteado o mal configurado.",
+                "Silencio de radio. No me llegó tu voz, desmuteate rey.",
+                "Cero audio. O me estás haciendo mímica o tenés el mic apagado.",
+                "No agarró el sonido. Chequeá en Windows si el micrófono default es el tuyo.",
+                "Hablaste al pedo porque el mic no me mandó nada. Revisá eso.",
+                "Ni un suspiro entró por el mic. Fijate la conexión.",
+                "Audio vacío. O no hablaste o tenés el mute físico puesto en el cable.",
+                "No procesé nada de voz. Acercate al mic o revisá los niveles.",
+                "Che, el micrófono me mandó ruido blanco o nada. Repetime.",
+                "El input de audio está muerto. Pegale un grito a ver si despierta, o revisá la config."
+            ],
+            "ERR_GENERIC": [
+                "Algo explotó en el backend y no sé qué es. Revisá la consola por las dudas.",
+                "Se rompió todo y ni yo sé por qué. Fijate los logs de Python.",
+                "Error random. El código hizo puf, tirate un ojo a la terminal.",
+                "Ups, crasheó algo interno. Vas a tener que debuggear un toque.",
+                "Fallo catastrófico o capaz una boludez, pero reventó. Mirá la consola.",
+                "Saltó una excepción que no tengo mapeada. Revisá el traceback.",
+                "Rompimos la matrix. Hay un error genérico dando vueltas por ahí.",
+                "El backend tiró la toalla con un error raro. Chequeá el log.",
+                "Pasó algo turbio en el código. Metete a la consola y fijate.",
+                "Error sorpresa. Ni la más pálida idea de qué falló, leete la consola a ver qué onda."
+            ],
+            "ERR_NO_API": [
+                "No configuraste la clave de la API... revisá los ajustes.",
+                "Bro... me falta la API Key en la config. Así no arranco ni a palos.",
+                "El archivo de config está vacío... o falta la llave. Ponela y volvé.",
+                "Cero API Key detectada. Entrá a las opciones... y cargame una.",
+                "Me pedís que procese, pero no me das la Key. Poné la clave en la config... rey.",
+                "Sin API Key... soy solo un modelo en pantalla. Configurá la llave de una vez.",
+                "Falta la llave mágica. Meté la API Key en las configuraciones... para empezar.",
+                "Che... te olvidaste de poner la API Key en el setup. Revisá eso.",
+                "No hay token de acceso configurado. Llená el campo de la API Key... pa.",
+                "La config dice que no tengo API Key. Imposible laburar así... agregala."
+            ]
+        }
 }

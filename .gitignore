@@ -1,6 +1,9 @@
 *.vrm
 *.onnx
 *.binary
+*.bin
+*.gitignore
+*.gitattributes
 web-cache/
 
 # Byte-compiled / optimized / DLL files

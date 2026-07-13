@@ -125,7 +125,15 @@ def run_app():
 
     def on_error(error_code):
         fallbacks = frases_data.get("fallbacks", {})
-        msg = fallbacks.get(error_code, "Algo reventó en el backend.")
+        fallback_data = fallbacks.get(error_code, ["Algo reventó en el backend y no sé qué es. Revisá la consola."])
+
+        if isinstance(fallback_data, list) and fallback_data:
+            msg = random.choice(fallback_data)
+        elif isinstance(fallback_data, str):
+            msg = fallback_data
+        else:
+            msg = "Error desconocido."
+
         voz_activa = config.get("active_voice", "es_gs")
         tts_core.process_text_async(msg, voz_activa)
 
