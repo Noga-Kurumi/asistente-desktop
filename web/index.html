@@ -99,6 +99,23 @@
                 hotkeyEl.textContent = hotkey;
             }
         };
+        window.startSpeaking = (text, duration) => {
+            console.log("🎭 [WEB] startSpeaking llamado con:", text, "duración:", duration);
+            window.speakingText = text;
+            window.speakingStartTime = Date.now();
+            window.speakingDuration = duration * 1000; // Convertir a milisegundos
+            window.charDuration = window.speakingDuration / text.length; // ms por carácter
+        };
+        window.getVisemeForChar = (char) => {
+            const vowelBlendshapes = {
+                'a': 'aa', 'á': 'aa', 'à': 'aa', 'ä': 'aa',
+                'e': 'e', 'é': 'e', 'è': 'e', 'ë': 'e',
+                'i': 'ih', 'í': 'ih', 'ì': 'ih', 'ï': 'ih',
+                'o': 'oh', 'ó': 'oh', 'ò': 'oh', 'ö': 'oh',
+                'u': 'ou', 'ú': 'ou', 'ù': 'ou', 'ü': 'ou',
+            };
+            return vowelBlendshapes[char.toLowerCase()] || null; // Consonantes = null (cerrar boca)
+        };
         window.hideReadyNotification = () => {
             const notif = document.getElementById('ready-notification');
             if (notif) {
@@ -212,18 +229,44 @@
                 currentVrm.scene.position.y += (avatarTargetY - currentVrm.scene.position.y) * 10 * delta;
 
                 if (window.avatarState === "speaking") {
-                    // Usar visemes basados en texto si están disponibles
-                    if (window.visemes && window.visemes.length > 0) {
-                        const elapsed = Date.now() - window.visemeStartTime;
-                        const newIndex = Math.floor(elapsed / window.visemeInterval);
+                    // Usar visemes basados en texto si está disponible
+                    if (window.speakingText && window.speakingText.length > 0 && window.charDuration) {
+                        const elapsed = Date.now() - window.speakingStartTime;
+                        // Usar duración calculada dinámicamente
+                        const newCharIndex = Math.floor(elapsed / window.charDuration);
                         
-                        if (newIndex < window.visemes.length) {
-                            const visemeValue = window.visemes[newIndex];
-                            let currentMouth = currentVrm.expressionManager.getValue('aa') || 0;
-                            currentVrm.expressionManager.setValue('aa', currentMouth + (visemeValue - currentMouth) * 15 * delta);
+                        if (newCharIndex < window.speakingText.length) {
+                            const char = window.speakingText[newCharIndex];
+                            const blendshape = window.getVisemeForChar(char);
+                            
+                            // Lista de blendshapes vocales VRM
+                            const vowelBlendshapes = ['aa', 'ih', 'ou', 'e', 'oh'];
+                            
+                            if (blendshape) {
+                                // Activar el blendshape correspondiente
+                                let currentValue = currentVrm.expressionManager.getValue(blendshape) || 0;
+                                currentVrm.expressionManager.setValue(blendshape, currentValue + (1.0 - currentValue) * 15 * delta);
+                                
+                                // Desactivar otros blendshapes vocales
+                                for (const bs of vowelBlendshapes) {
+                                    if (bs !== blendshape) {
+                                        let otherValue = currentVrm.expressionManager.getValue(bs) || 0;
+                                        currentVrm.expressionManager.setValue(bs, otherValue * (1 - 15 * delta));
+                                    }
+                                }
+                            } else {
+                                // Consonante: desactivar todos los blendshapes vocales
+                                for (const bs of vowelBlendshapes) {
+                                    let value = currentVrm.expressionManager.getValue(bs) || 0;
+                                    currentVrm.expressionManager.setValue(bs, value * (1 - 15 * delta));
+                                }
+                            }
                         } else {
-                            // Se acabaron los visemes, cerrar boca
-                            currentVrm.expressionManager.setValue('aa', 0);
+                            // Se acabó el texto, cerrar boca
+                            const vowelBlendshapes = ['aa', 'ih', 'ou', 'e', 'oh'];
+                            for (const bs of vowelBlendshapes) {
+                                currentVrm.expressionManager.setValue(bs, 0);
+                            }
                         }
                     } else {
                         // Fallback a animación sinusoidal
@@ -233,7 +276,11 @@
                         currentVrm.expressionManager.setValue('aa', currentMouth + (mouthOpen - currentMouth) * 15 * delta);
                     }
                 } else {
-                    currentVrm.expressionManager.setValue('aa', 0);
+                    // Desactivar todos los blendshapes vocales cuando no habla
+                    const vowelBlendshapes = ['aa', 'ih', 'ou', 'e', 'oh'];
+                    for (const bs of vowelBlendshapes) {
+                        currentVrm.expressionManager.setValue(bs, 0);
+                    }
                 }
             }
             renderer.render(scene, camera);

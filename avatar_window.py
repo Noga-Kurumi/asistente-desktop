@@ -131,6 +131,11 @@ class AvatarWindow(QWidget):
         texto_limpio = text.replace("'", "\\'").replace('\n', ' ')
         self.webview.page().runJavaScript(f"window.updateTranscription('{texto_limpio}');")
 
+    def on_text_to_speak(self, text, duration):
+        """Slot para recibir texto y duración del TTS y enviar al frontend (thread-safe)"""
+        texto_limpio = text.replace("'", "\\'").replace('\n', ' ')
+        self.webview.page().runJavaScript(f"window.startSpeaking('{texto_limpio}', {duration});")
+
     def check_system_ready(self):
         """Verifica si el sistema está listo y emite la señal correspondiente"""
         self.webview.page().runJavaScript("window.systemReady", self.on_ready_check)

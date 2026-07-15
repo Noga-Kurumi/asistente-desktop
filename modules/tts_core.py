@@ -22,6 +22,7 @@ from kokoro_onnx import Kokoro
 class AssistantTTS(QObject):
     speech_started = Signal()
     speech_ended = Signal()
+    text_to_speak = Signal(str, float)  # Señal para enviar texto y duración al avatar (thread-safe)
 
     def __init__(self):
         super().__init__()
@@ -71,6 +72,12 @@ class AssistantTTS(QObject):
         """Genera audio y reproduce"""
         try:
             samples, sample_rate = self.kokoro.create(text, voice=voice, speed=1.0, lang="es")
+            
+            # Calcular duración del audio en segundos
+            audio_duration = len(samples) / sample_rate
+            
+            # Emitir señal con texto y duración para lip sync (thread-safe)
+            self.text_to_speak.emit(text, audio_duration)
             
             self.speech_started.emit()
             sd.play(samples, sample_rate)

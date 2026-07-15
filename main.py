@@ -157,6 +157,7 @@ def run_app():
 
     tts_core.speech_started.connect(on_speech_started)
     tts_core.speech_ended.connect(on_speech_ended)
+    tts_core.text_to_speak.connect(avatar_widget.on_text_to_speak)
 
     sys.exit(app.exec())
 
