@@ -51,12 +51,15 @@ class KeyCatcher(QObject):
         return False
 
 class SetupWindow(QWidget):
-    config_saved = Signal()  # Señal para notificar que se guardó la configuración
-    
     def __init__(self, from_system_tray=False):
         super().__init__()
         self.setWindowTitle("Configuración del Asistente")
-        self.setWindowIcon(QIcon("app.ico"))
+        
+        # Usar ruta absoluta para el icono
+        icon_path = os.path.join(os.path.dirname(__file__), "app.ico")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+        
         self.resize(400, 520)
         self.config_data = self.load_config()
         self.is_first_run = not os.path.exists(CONFIG_FILE)
@@ -64,6 +67,13 @@ class SetupWindow(QWidget):
         
         self.catcher = KeyCatcher()
         self.catcher.key_caught.connect(self.on_hotkey_caught)
+        
+        # Cargar icono para los popups
+        self.app_icon = None
+        icon_path = os.path.join(os.path.dirname(__file__), "app.ico")
+        if os.path.exists(icon_path):
+            self.app_icon = QIcon(icon_path)
+        
         self.init_ui()
 
     def load_config(self):
@@ -136,7 +146,7 @@ class SetupWindow(QWidget):
         self.check_startup.setChecked(self.config_data.get("launch_with_system", False))
         layout.addWidget(self.check_startup)
 
-        btn_save = QPushButton("Guardar y Probar Sistema")
+        btn_save = QPushButton("Guardar Cambios")
         btn_save.clicked.connect(self.save_config)
         layout.addSpacing(10)
         layout.addWidget(btn_save)
@@ -223,7 +233,13 @@ class SetupWindow(QWidget):
         
         avatar_val = self.combo_avatar.currentText()
         if avatar_val == "Ninguno seleccionado":
-            QMessageBox.warning(self, "Error", "Debes seleccionar un avatar para continuar.")
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Error")
+            msg.setText("Debes seleccionar un avatar para continuar.")
+            msg.setIcon(QMessageBox.Icon.Warning)
+            if self.app_icon:
+                msg.setWindowIcon(self.app_icon)
+            msg.exec()
             return
         self.config_data["active_avatar"] = avatar_val
         
@@ -247,12 +263,24 @@ class SetupWindow(QWidget):
         missing_fields = [field for field in required_fields if not self.config_data.get(field) or self.config_data.get(field) == ""]
         
         if missing_fields:
-            QMessageBox.warning(self, "Error", f"Faltan campos obligatorios: {', '.join(missing_fields)}")
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Error")
+            msg.setText(f"Faltan campos obligatorios: {', '.join(missing_fields)}")
+            msg.setIcon(QMessageBox.Icon.Warning)
+            if self.app_icon:
+                msg.setWindowIcon(self.app_icon)
+            msg.exec()
             return
         
         # Advertir si no hay API key pero permitir guardar
         if not self.config_data.get("api_key") or self.config_data.get("api_key") == "":
-            QMessageBox.warning(self, "Advertencia", "No has configurado una API Key. El software no responderá a consultas sin una clave válida.")
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Advertencia")
+            msg.setText("No has configurado una API Key. El software no responderá a consultas sin una clave válida.")
+            msg.setIcon(QMessageBox.Icon.Warning)
+            if self.app_icon:
+                msg.setWindowIcon(self.app_icon)
+            msg.exec()
         
         # Comportamiento según origen
         if not self.from_system_tray:
@@ -261,15 +289,14 @@ class SetupWindow(QWidget):
         else:
             # Se abrió desde system tray
             if config_changed:
-                QMessageBox.information(
-                    self, 
-                    "Reiniciando Aplicación", 
-                    "La configuración ha cambiado. El software se reiniciará para aplicar los cambios."
-                )
-                self.config_saved.emit()  # Emitir señal para que main.py reinicie
-                self.close()
-                return
-            # Si no hubo cambios, solo cerrar
+                msg = QMessageBox(self)
+                msg.setWindowTitle("Reinicio Requerido")
+                msg.setText("La configuración ha cambiado. Debes reiniciar el software manualmente para aplicar los cambios.")
+                msg.setIcon(QMessageBox.Icon.Information)
+                if self.app_icon:
+                    msg.setWindowIcon(self.app_icon)
+                msg.exec()
+            # Siempre cerrar
             self.close()
 
     def handle_startup_os(self, enable):

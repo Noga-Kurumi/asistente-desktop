@@ -212,10 +212,26 @@
                 currentVrm.scene.position.y += (avatarTargetY - currentVrm.scene.position.y) * 10 * delta;
 
                 if (window.avatarState === "speaking") {
-                    let timeNow = Date.now() * 0.015;
-                    let mouthOpen = (Math.sin(timeNow) * 0.5 + 0.5) * 0.8;
-                    let currentMouth = currentVrm.expressionManager.getValue('aa') || 0;
-                    currentVrm.expressionManager.setValue('aa', currentMouth + (mouthOpen - currentMouth) * 15 * delta);
+                    // Usar visemes basados en texto si están disponibles
+                    if (window.visemes && window.visemes.length > 0) {
+                        const elapsed = Date.now() - window.visemeStartTime;
+                        const newIndex = Math.floor(elapsed / window.visemeInterval);
+                        
+                        if (newIndex < window.visemes.length) {
+                            const visemeValue = window.visemes[newIndex];
+                            let currentMouth = currentVrm.expressionManager.getValue('aa') || 0;
+                            currentVrm.expressionManager.setValue('aa', currentMouth + (visemeValue - currentMouth) * 15 * delta);
+                        } else {
+                            // Se acabaron los visemes, cerrar boca
+                            currentVrm.expressionManager.setValue('aa', 0);
+                        }
+                    } else {
+                        // Fallback a animación sinusoidal
+                        let timeNow = Date.now() * 0.015;
+                        let mouthOpen = (Math.sin(timeNow) * 0.5 + 0.5) * 0.8;
+                        let currentMouth = currentVrm.expressionManager.getValue('aa') || 0;
+                        currentVrm.expressionManager.setValue('aa', currentMouth + (mouthOpen - currentMouth) * 15 * delta);
+                    }
                 } else {
                     currentVrm.expressionManager.setValue('aa', 0);
                 }

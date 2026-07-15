@@ -33,8 +33,13 @@ class AssistantTTS(QObject):
         
         self.kokoro = None
         self.is_ready = False
+        self.avatar_widget = None  # Referencia al avatar_widget para enviar visemes
         
         threading.Thread(target=self._init_engine, daemon=True).start()
+
+    def set_avatar_widget(self, avatar_widget):
+        """Establece la referencia al avatar_widget para enviar visemes"""
+        self.avatar_widget = avatar_widget
 
     def _init_engine(self):
         inicio = time.perf_counter()
@@ -51,9 +56,6 @@ class AssistantTTS(QObject):
         try:
             self.kokoro = Kokoro(modelo_a_usar, self.voices_path)
             
-            # Warm-up para matar la latencia de la primera ejecución
-            self.kokoro.create("a", voice="af_bella", speed=1.0, lang="es")
-            
             fin = time.perf_counter()
             self.is_ready = True
             print(f"✅ [TTS] Motor listo en {(fin-inicio):.2f}s")
@@ -66,12 +68,13 @@ class AssistantTTS(QObject):
         threading.Thread(target=self._generate_and_play, args=(text, voice), daemon=True).start()
 
     def _generate_and_play(self, text, voice):
+        """Genera audio y reproduce"""
         try:
             samples, sample_rate = self.kokoro.create(text, voice=voice, speed=1.0, lang="es")
             
             self.speech_started.emit()
             sd.play(samples, sample_rate)
-            sd.wait() # Traba el hilo hasta que termine el audio
+            sd.wait()
             self.speech_ended.emit()
             
         except Exception as e:

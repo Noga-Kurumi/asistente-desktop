@@ -86,3 +86,11 @@ class VoiceInputManager(QObject):
             else:
                 self.audio_buffer = []
                 self.recording_canceled.emit()
+    
+    def cleanup(self):
+        """Limpia recursos antes de salir"""
+        if self.listener:
+            self.listener.stop()
+        if self.stream:
+            self.stream.stop()
+        self.live_timer.stop()

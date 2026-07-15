@@ -41,22 +41,13 @@ def run_app():
     
     avatar_widget = AvatarWindow()
     avatar_widget.show()
-
-    # Función para reiniciar la aplicación
-    def restart_app():
-        print("🔄 [MAIN] Reiniciando aplicación...")
-        
-        # Relanzar la aplicación usando el mismo script
-        subprocess.Popen([sys.executable, os.path.abspath(__file__)])
-        
-        # Forzar cierre inmediato del proceso sin ejecutar más handlers
-        os._exit(0)
     
+    # Conectar TTS con avatar para visemes
+    tts_core.set_avatar_widget(avatar_widget)
+
     # Función para abrir ventana de configuraciones
     def open_config_window():
-        setup_window = setup.run_setup_window(from_system_tray=True)
-        if setup_window:
-            setup_window.config_saved.connect(restart_app)
+        setup.run_setup_window(from_system_tray=True)
 
     # System Tray
     tray_icon = QSystemTrayIcon(QIcon(icon_path), app)

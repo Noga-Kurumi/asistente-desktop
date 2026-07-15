@@ -121,8 +121,7 @@ class AvatarWindow(QWidget):
         self.check_ready_timer.start(500)
 
     def closeEvent(self, event):
-        """Detener el servidor HTTP al cerrar la ventana"""
-        self.http_server.stop()
+        """Cerrar sin limpieza"""
         super().closeEvent(event)
 
     def toggle_recording_ui(self, is_recording):
