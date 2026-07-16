@@ -72,10 +72,6 @@
             }
         };
 
-        window.setAvatarState = (state) => { 
-            console.log("🎭 [WEB] setAvatarState llamado con:", state);
-            window.avatarState = state; 
-        };
         window.apuntarFalso = () => {
             console.log("🎭 [WEB] apuntarFalso llamado");
         };
@@ -215,6 +211,60 @@
             currentVrm.scene.position.set(posX, avatarTargetY, 0);
 
             window.setAvatarState(window.avatarState);
+            
+            // SETUP DE POSE DE DESCANSO (bajar brazos desde T-pose)
+            const degToRad = THREE.MathUtils.degToRad;
+            
+            // Guardar valores base de rotación para brazos
+            window.leftArmBaseZ = degToRad(75);
+            window.rightArmBaseZ = degToRad(-75);
+            
+            // Bajar brazos a pose relajada
+            if (currentVrm.humanoid.getNormalizedBoneNode('leftUpperArm')) {
+                const leftUpperArm = currentVrm.humanoid.getNormalizedBoneNode('leftUpperArm');
+                leftUpperArm.rotation.z = window.leftArmBaseZ;
+            }
+            if (currentVrm.humanoid.getNormalizedBoneNode('rightUpperArm')) {
+                const rightUpperArm = currentVrm.humanoid.getNormalizedBoneNode('rightUpperArm');
+                rightUpperArm.rotation.z = window.rightArmBaseZ;
+            }
+            
+            // Flexionar codos (15-20° en Y)
+            if (currentVrm.humanoid.getNormalizedBoneNode('leftLowerArm')) {
+                const leftLowerArm = currentVrm.humanoid.getNormalizedBoneNode('leftLowerArm');
+                leftLowerArm.rotation.y = degToRad(17);
+            }
+            if (currentVrm.humanoid.getNormalizedBoneNode('rightLowerArm')) {
+                const rightLowerArm = currentVrm.humanoid.getNormalizedBoneNode('rightLowerArm');
+                rightLowerArm.rotation.y = degToRad(-17);
+            }
+            
+            // Rotar hombros (5° adelante Y, -3° abajo Z)
+            if (currentVrm.humanoid.getNormalizedBoneNode('leftShoulder')) {
+                const leftShoulder = currentVrm.humanoid.getNormalizedBoneNode('leftShoulder');
+                leftShoulder.rotation.y = degToRad(5);
+                leftShoulder.rotation.z = degToRad(-3);
+            }
+            if (currentVrm.humanoid.getNormalizedBoneNode('rightShoulder')) {
+                const rightShoulder = currentVrm.humanoid.getNormalizedBoneNode('rightShoulder');
+                rightShoulder.rotation.y = degToRad(-5);
+                rightShoulder.rotation.z = degToRad(3);
+            }
+            
+            // Inicializar variables para animación procedimental
+            window.idleTime = 0;
+            window.spineSwayX = 0;
+            window.spineSwayZ = 0;
+            window.lastSwayX = 0;
+            window.lastSwayZ = 0;
+            window.leftArmLag = 0;
+            window.rightArmLag = 0;
+            window.nextSaccadeTime = Date.now() + Math.random() * 2500 + 1500;
+            window.nextBlinkTime = Date.now() + Math.random() * 3500 + 2500;
+            window.blinkState = 0; // 0 = abierto, 1 = cerrando, 2 = abriendo
+            window.blinkValue = 0;
+            
+            console.log("🎭 [WEB] Pose de descanso configurada");
         }, undefined, (error) => {
             console.error("🎭 [WEB] ERROR cargando avatar VRM:", error);
         });
@@ -225,8 +275,160 @@
             const delta = clock.getDelta();
             if (currentVrm) {
                 const currentY = currentVrm.scene.position.y;
+                window.idleTime += delta;
+                const degToRad = THREE.MathUtils.degToRad;
+                
+                // Recalcular visibleWidth y finalScale para el loop
+                const fovRad = THREE.MathUtils.degToRad(camera.fov);
+                const visibleHeight = 2 * Math.tan(fovRad / 2) * cameraZ;
+                const visibleWidth = visibleHeight * (window.innerWidth / window.innerHeight);
+                const frustumDiagonal = Math.sqrt(Math.pow(visibleWidth, 2) + Math.pow(visibleHeight, 2));
+                const finalScale = (frustumDiagonal / 0.7) * 0.65;
+                
+                // LOOP DE ANIMACIÓN PROCEDIMENTAL (Idle Activo)
+                
+                // 1. Respiración (~0.25 Hz) - Chest y UpperChest en X
+                const breathFreq = 0.25;
+                const breathAmp = degToRad(0.8);
+                const breathValue = Math.sin(window.idleTime * breathFreq * Math.PI * 2) * breathAmp;
+                
+                if (currentVrm.humanoid.getNormalizedBoneNode('chest')) {
+                    const chest = currentVrm.humanoid.getNormalizedBoneNode('chest');
+                    chest.rotation.x = breathValue;
+                }
+                if (currentVrm.humanoid.getNormalizedBoneNode('upperChest')) {
+                    const upperChest = currentVrm.humanoid.getNormalizedBoneNode('upperChest');
+                    upperChest.rotation.x = breathValue * 0.8;
+                }
+                
+                // Hombros con desfase en Z
+                if (currentVrm.humanoid.getNormalizedBoneNode('leftShoulder')) {
+                    const leftShoulder = currentVrm.humanoid.getNormalizedBoneNode('leftShoulder');
+                    leftShoulder.rotation.z = degToRad(-3) + breathValue * 0.3;
+                }
+                if (currentVrm.humanoid.getNormalizedBoneNode('rightShoulder')) {
+                    const rightShoulder = currentVrm.humanoid.getNormalizedBoneNode('rightShoulder');
+                    rightShoulder.rotation.z = degToRad(3) - breathValue * 0.3;
+                }
+                
+                // 2. Tambaleo (Standing Sway ~0.1 Hz) - Spine en X y Z
+                const swayFreq = 0.1;
+                const swayAmp = degToRad(1.5);
+                // Suma de senos desfasados para simular Perlin noise
+                const swayX = (Math.sin(window.idleTime * swayFreq * Math.PI * 2) + 
+                              Math.sin(window.idleTime * swayFreq * 0.7 * Math.PI * 2) * 0.5) * swayAmp;
+                const swayZ = (Math.sin(window.idleTime * swayFreq * Math.PI * 2 + 1) + 
+                              Math.sin(window.idleTime * swayFreq * 0.6 * Math.PI * 2 + 1) * 0.5) * swayAmp;
+                
+                window.spineSwayX = swayX;
+                window.spineSwayZ = swayZ;
+                
+                if (currentVrm.humanoid.getNormalizedBoneNode('spine')) {
+                    const spine = currentVrm.humanoid.getNormalizedBoneNode('spine');
+                    spine.rotation.x = swayX;
+                    spine.rotation.z = swayZ;
+                }
+                
+                // Traslación global sutil en sintonía con balanceo (solo si no está oculto)
+                const posOffsetX = swayX * 0.02;
+                const posOffsetY = swayZ * 0.01;
+                currentVrm.scene.position.x = (visibleWidth / 2) - (0.1 * finalScale) + posOffsetX;
+                
+                // Interpolación suave de posición Y (transición suave al ocultar/mostrar)
+                if (window.avatarState !== "hidden") {
+                    // Aplicar tambaleo en Y cuando está visible
+                    const targetY = avatarBaseY + posOffsetY;
+                    currentVrm.scene.position.y += (targetY - currentVrm.scene.position.y) * 10 * delta;
+                } else {
+                    // Interpolar hacia posición oculta
+                    currentVrm.scene.position.y += (avatarTargetY - currentVrm.scene.position.y) * 10 * delta;
+                }
+                
+                // 3. Inercia en Brazos (Sway Lag) - delay de 0.2s
+                const armLagFactor = 0.2;
+                window.leftArmLag += (swayX - window.leftArmLag) * armLagFactor * delta * 5;
+                window.rightArmLag += (swayX - window.rightArmLag) * armLagFactor * delta * 5;
+                
+                // Aplicar rotación base + sway lag (usar valores guardados del setup)
+                if (currentVrm.humanoid.getNormalizedBoneNode('leftUpperArm')) {
+                    const leftUpperArm = currentVrm.humanoid.getNormalizedBoneNode('leftUpperArm');
+                    leftUpperArm.rotation.z = window.leftArmBaseZ - window.leftArmLag * 0.5;
+                }
+                if (currentVrm.humanoid.getNormalizedBoneNode('rightUpperArm')) {
+                    const rightUpperArm = currentVrm.humanoid.getNormalizedBoneNode('rightUpperArm');
+                    rightUpperArm.rotation.z = window.rightArmBaseZ + window.rightArmLag * 0.5;
+                }
+                
+                // 4. Compensación de Cabeza - 60% del ángulo de Spine en sentido opuesto
+                if (currentVrm.humanoid.getNormalizedBoneNode('head')) {
+                    const head = currentVrm.humanoid.getNormalizedBoneNode('head');
+                    head.rotation.x = -swayX * 0.6;
+                    head.rotation.z = -swayZ * 0.6;
+                }
+                
+                // 5. Saccades de Ojos - movimientos rápidos aleatorios
+                const now = Date.now();
+                if (now > window.nextSaccadeTime) {
+                    // Movimiento rápido a target aleatorio
+                    const saccadeX = (Math.random() - 0.5) * 0.3;
+                    const saccadeY = (Math.random() - 0.5) * 0.2;
+                    
+                    if (currentVrm.humanoid.getNormalizedBoneNode('leftEye')) {
+                        const leftEye = currentVrm.humanoid.getNormalizedBoneNode('leftEye');
+                        leftEye.rotation.y = saccadeX;
+                        leftEye.rotation.x = saccadeY;
+                    }
+                    if (currentVrm.humanoid.getNormalizedBoneNode('rightEye')) {
+                        const rightEye = currentVrm.humanoid.getNormalizedBoneNode('rightEye');
+                        rightEye.rotation.y = saccadeX;
+                        rightEye.rotation.x = saccadeY;
+                    }
+                    
+                    // Próximo saccade en 1.5s - 4s
+                    window.nextSaccadeTime = now + Math.random() * 2500 + 1500;
+                }
+                
+                // 6. Parpadeo Procedural
+                if (now > window.nextBlinkTime) {
+                    window.blinkState = 1; // Empezar a cerrar
+                    window.nextBlinkTime = now + Math.random() * 3500 + 2500;
+                    
+                    // 15% de chance de doble parpadeo
+                    if (Math.random() < 0.15) {
+                        window.doubleBlink = true;
+                    } else {
+                        window.doubleBlink = false;
+                    }
+                }
+                
+                // Procesar parpadeo
+                if (window.blinkState === 1) {
+                    // Cerrando (0.08s)
+                    window.blinkValue += delta * 12.5;
+                    if (window.blinkValue >= 1) {
+                        window.blinkValue = 1;
+                        window.blinkState = 2;
+                        window.blinkTimer = now;
+                    }
+                } else if (window.blinkState === 2) {
+                    // Abriendo (0.15s)
+                    window.blinkValue -= delta * 6.67;
+                    if (window.blinkValue <= 0) {
+                        window.blinkValue = 0;
+                        window.blinkState = 0;
+                        
+                        // Doble parpadeo
+                        if (window.doubleBlink) {
+                            window.doubleBlink = false;
+                            window.blinkState = 1;
+                        }
+                    }
+                }
+                
+                // Aplicar parpadeo al blendshape
+                currentVrm.expressionManager.setValue('blink', window.blinkValue);
+                
                 currentVrm.update(delta);
-                currentVrm.scene.position.y += (avatarTargetY - currentVrm.scene.position.y) * 10 * delta;
 
                 if (window.avatarState === "speaking") {
                     // Usar visemes basados en texto si está disponible
