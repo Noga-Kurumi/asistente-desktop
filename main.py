@@ -3,9 +3,13 @@ import os
 import json
 import random
 import subprocess
+import logging
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
 from PySide6.QtGui import QIcon, QAction
 from PySide6.QtCore import QTimer
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 from modules.input_handler import VoiceInputManager
 from modules.audio_core import AssistantAudioCore
@@ -75,43 +79,78 @@ def run_app():
 
     # Funciones de control
     def on_js_event(msg):
+        logger.info(f"🔌 [MAIN] JS event recibido: {msg}")
         if msg == "TTS_ENDED":
+            logger.info("🔓 [MAIN] TTS terminado, desbloqueando input")
             input_manager.set_locked(False)
 
     def on_recording_started():
+        logger.info("🎙️ [MAIN] Grabación iniciada")
         input_manager.set_locked(True)
+        logger.info("📡 [MAIN] Llamando a toggle_recording_ui(True)")
         avatar_widget.toggle_recording_ui(True)
         avatar_widget.webview.page().runJavaScript("window.hideReadyNotification();")
 
     def on_recording_canceled():
+        logger.info("❌ [MAIN] Grabación cancelada")
+        audio_core.stop_live_transcription()  # Detener streaming
         avatar_widget.toggle_recording_ui(False)
         avatar_widget.webview.page().runJavaScript('window.setAvatarState("hidden");')
         input_manager.set_locked(False)
 
     def on_valid_audio_input(audio_array):
+        logger.info(f"🎯 [MAIN] Audio válido recibido: {len(audio_array)} samples")
+        logger.info("📡 [MAIN] Llamando a toggle_recording_ui(False) para cambiar a Procesando")
+        # Cambiar a estado Procesando
         avatar_widget.toggle_recording_ui(False)
+        # Detener streaming primero
+        audio_core.stop_live_transcription()
+        # No ocultar UI inmediatamente, esperar transcripción final
         QTimer.singleShot(100, lambda: audio_core.process_voice_input(audio_array))
 
     def on_live_text(text):
-        avatar_widget.update_transcription(text)
+        logger.info(f"📝 [MAIN] Texto live recibido: '{text}'")
+        avatar_widget.update_live_transcription(text)
+    
+    def on_volume_level(level):
+        """Actualiza el medidor de volumen en la UI"""
+        avatar_widget.webview.page().runJavaScript(f'window.updateVolumeMeter({level});')
 
     def on_text_transcribed(text):
+        logger.info(f"✅ [MAIN] Texto transcribido: '{text}'")
         if not text.strip():
+            logger.warning("⚠️ [MAIN] Texto vacío, cancelando")
             on_recording_canceled()
             return
         
+        # Actualizar transcripción final en la caja
+        logger.info("📝 [MAIN] Actualizando transcripción final en UI")
+        avatar_widget.update_transcription(text)
+        
+        # Ocultar UI después de 2 segundos usando función separada
+        logger.info("⏱️ [MAIN] Programando ocultamiento de UI en 2 segundos")
+        def hide_ui():
+            logger.info("🔽 [MAIN] Ejecutando ocultamiento de UI")
+            avatar_widget.hide_recording_ui()
+        
+        QTimer.singleShot(2000, hide_ui)
+        
         # Solo poner el avatar en thinking si hay transcripción válida
+        logger.info("🤔 [MAIN] Poniendo avatar en estado thinking")
         avatar_widget.webview.page().runJavaScript('window.setAvatarState("thinking");')
             
         api_key = config.get("api_key", "").strip()
         voz_activa = config.get("active_voice", "es_gs")
 
         if api_key:
+            logger.info("🔑 [MAIN] API key presente, procesando respuesta")
             pool = frases_data.get("inmediatos", []) + frases_data.get("largos", [])
             if pool:
                 frase_random = random.choice(pool)
+                logger.info(f"🎵 [MAIN] Frase inmediata seleccionada: '{frase_random}'")
                 tts_core.process_text_async(frase_random, voz_activa)
                 
+        logger.info("🧠 [MAIN] Enviando query al cerebro")
         api_brain.process_query_async(text)
 
     def on_error(error_code):
@@ -147,6 +186,7 @@ def run_app():
     input_manager.recording_canceled.connect(on_recording_canceled)
     input_manager.audio_ready.connect(on_valid_audio_input)
     input_manager.audio_live_ready.connect(audio_core.process_live_input)
+    input_manager.volume_level.connect(on_volume_level)
     audio_core.live_text_ready.connect(on_live_text)
     audio_core.text_transcribed.connect(on_text_transcribed)
     

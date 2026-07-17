@@ -2,8 +2,13 @@ import os
 import json
 import time
 import threading
-from faster_whisper import WhisperModel
+import numpy as np
 from PySide6.QtCore import QObject, Signal
+import logging
+from modules.whisper_wrapper import WhisperCppWrapper
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 CONFIG_FILE = "config.json"
 
@@ -15,12 +20,28 @@ class AssistantAudioCore(QObject):
         super().__init__()
         self.config = self._load_config()
         
-        # Optimizaciones para balance velocidad/precisión:
-        # - Modelo "base" para mejor precisión (vs "tiny")
-        # - cpu_threads=4 para mayor paralelismo
-        # - num_workers=1 para evitar overhead
-        self.whisper = WhisperModel("base", device="cpu", compute_type="int8", cpu_threads=4, num_workers=1)
+        # Lock para evitar conflictos de hilos
+        self.whisper_lock = threading.Lock()
+        
+        # Flag para evitar múltiples transcripciones live simultáneas
         self.is_live_transcribing = False
+        
+        # Buffer de audio para streaming
+        self.live_audio_buffer = []
+        
+        # Inicializar wrapper de whisper.cpp
+        base_dir = os.path.dirname(os.path.dirname(__file__))
+        exe_path = os.path.join(base_dir, "whisper_cpp", "Release", "whisper-cli.exe")
+        model_path = os.path.join(base_dir, "models", "ggml-tiny.bin")
+        
+        self.whisper = WhisperCppWrapper(
+            exe_path=exe_path,
+            model_path=model_path,
+            language='es',
+            n_threads=2
+        )
+        
+        logger.info(f"✅ [AUDIO_CORE] Wrapper whisper.cpp inicializado")
 
     def _load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -51,39 +72,69 @@ class AssistantAudioCore(QObject):
         return len(text) > 20  # Solo aceptar textos largos sin características claras
 
     def process_voice_input(self, audio_array):
+        logger.info(f"🎯 [AUDIO_CORE] Iniciando transcripción final: {len(audio_array)} samples")
         threading.Thread(target=self._final_transcribe_thread, args=(audio_array,), daemon=True).start()
 
     def _final_transcribe_thread(self, audio_array):
         try:
-            # Intentar primero con español
-            segments, _ = self.whisper.transcribe(audio_array, language="es", beam_size=1, condition_on_previous_text=False)
-            text = "".join([segment.text for segment in segments]).strip()
-            
-            # Verificar si el texto parece ser español (caracteres válidos)
-            if self._is_valid_spanish(text):
-                self.text_transcribed.emit(text)
-            else:
-                # Si no parece español, intentar con inglés
-                segments, _ = self.whisper.transcribe(audio_array, language="en", beam_size=1, condition_on_previous_text=False)
-                text = "".join([segment.text for segment in segments]).strip()
-                self.text_transcribed.emit(text)
+            # Usar lock para evitar conflictos de hilos
+            with self.whisper_lock:
+                # Transcribir usando el wrapper
+                success, text = self.whisper.transcribe(audio_array, timeout=30)
+                
+                if success and text:
+                    # Verificar si el texto parece ser español
+                    if self._is_valid_spanish(text):
+                        logger.info(f"🇪🇸 [AUDIO_CORE] Texto válido en español, emitiendo")
+                        self.text_transcribed.emit(text)
+                    else:
+                        logger.info(f"🔄 [AUDIO_CORE] Texto no parece español, intentando inglés")
+                        # Cambiar idioma temporalmente
+                        self.whisper.language = 'en'
+                        success_en, text_en = self.whisper.transcribe(audio_array, timeout=30)
+                        self.whisper.language = 'es'  # Restaurar español
+                        
+                        if success_en and text_en:
+                            logger.info(f"✅ [AUDIO_CORE] Transcripción en inglés: '{text_en}'")
+                            self.text_transcribed.emit(text_en)
+                        else:
+                            logger.warning("⚠️ [AUDIO_CORE] Transcripción en inglés falló")
+                            self.text_transcribed.emit("")
+                else:
+                    logger.warning("⚠️ [AUDIO_CORE] Transcripción final falló o vacía")
+                    self.text_transcribed.emit("")
+                    
         except Exception as e:
-            print(f"❌ [AUDIO_CORE] Error: {e}")
+            logger.error(f"❌ [AUDIO_CORE] Error en transcripción final: {e}", exc_info=True)
             self.text_transcribed.emit("")
 
     def process_live_input(self, audio_array):
+        # Iniciar streaming real con whisper-stream-pcm.exe
         if self.is_live_transcribing:
+            # Si ya está transcribiendo, enviar chunk de audio
+            if self.whisper.stream_running:
+                self.whisper.send_audio_chunk(audio_array)
             return
+        
         self.is_live_transcribing = True
-        threading.Thread(target=self._live_transcribe_thread, args=(audio_array,), daemon=True).start()
-
-    def _live_transcribe_thread(self, audio_array):
-        try:
-            segments, _ = self.whisper.transcribe(audio_array, language="es", beam_size=1, condition_on_previous_text=False)
-            text = "".join([s.text for s in segments]).strip()
-            if text:
-                self.live_text_ready.emit(text)
-        except Exception:
-            pass
-        finally:
+        
+        # Iniciar streaming con callback
+        success = self.whisper.start_streaming(self._stream_callback)
+        
+        if success:
+            # Enviar primer chunk
+            self.whisper.send_audio_chunk(audio_array)
+        else:
+            logger.error("❌ [AUDIO_CORE] No se pudo iniciar streaming")
             self.is_live_transcribing = False
+    
+    def _stream_callback(self, text: str):
+        """Callback llamado cuando se recibe un segmento de transcripción"""
+        self.live_text_ready.emit(text)
+    
+    def stop_live_transcription(self):
+        """Detiene el streaming real"""
+        if self.is_live_transcribing:
+            self.whisper.stop_streaming()
+            self.is_live_transcribing = False
+            self.live_audio_buffer = []

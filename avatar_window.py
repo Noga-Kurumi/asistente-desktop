@@ -127,9 +127,16 @@ class AvatarWindow(QWidget):
     def toggle_recording_ui(self, is_recording):
         self.webview.page().runJavaScript(f"window.toggleRecordingUI({'true' if is_recording else 'false'});")
 
+    def hide_recording_ui(self):
+        self.webview.page().runJavaScript("window.hideRecordingUI();")
+
     def update_transcription(self, text):
         texto_limpio = text.replace("'", "\\'").replace('\n', ' ')
         self.webview.page().runJavaScript(f"window.updateTranscription('{texto_limpio}');")
+
+    def update_live_transcription(self, text):
+        texto_limpio = text.replace("'", "\\'").replace('\n', ' ')
+        self.webview.page().runJavaScript(f"window.updateLiveTranscription('{texto_limpio}');")
 
     def on_text_to_speak(self, text, duration):
         """Slot para recibir texto y duración del TTS y enviar al frontend (thread-safe)"""

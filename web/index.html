@@ -16,6 +16,28 @@
             z-index: 10;
         }
         #transcription-box.visible { bottom: 40px; }
+        #transcription-status.blinking {
+            animation: blink 1s infinite;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        #volume-meter {
+            width: 100%;
+            height: 8px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+        #volume-bar {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #00ff66, #00ffcc, #ffcc00, #ff6666);
+            transition: width 0.1s ease-out;
+            border-radius: 4px;
+        }
         #ready-notification {
             position: absolute; bottom: -150px; right: 50px; width: 320px;
             background: rgba(15, 15, 20, 0.9); border: 1px solid #00ff66;
@@ -45,20 +67,39 @@
         console.log("🎭 [WEB] Sistema de avatar inicializado, estado:", window.avatarState);
         
         window.toggleRecordingUI = (isRecording) => {
+            console.log("🎭 [WEB] toggleRecordingUI llamado con:", isRecording);
             const transBox = document.getElementById('transcription-box');
-            if (!transBox) return;
+            if (!transBox) {
+                console.error("🎭 [WEB] ERROR: transcription-box no encontrado");
+                return;
+            }
             
             clearTimeout(boxTimeout); // Cancelamos cualquier cierre pendiente si volvés a tocar la tecla
             
             if (isRecording) {
+                console.log("🎭 [WEB] Mostrando UI de grabación (Escuchando...)");
                 window.setAvatarState("hidden");
                 transBox.classList.add('visible');
-                document.getElementById('transcription-text').innerHTML = "Escuchando... <span class='typing-indicator'>|</span>";
+                document.getElementById('transcription-status').innerHTML = "🎙️ Escuchando";
+                document.getElementById('transcription-status').classList.remove('blinking');
+                document.getElementById('transcription-text').innerHTML = "...";
             } else {
-                // Ocultar la caja de transcripción
-                boxTimeout = setTimeout(() => {
-                    transBox.classList.remove('visible');
-                }, 2000);
+                console.log("🎭 [WEB] Cambiando a estado Procesando");
+                // Cambiar texto de estado a Procesando con efecto de intermitencia
+                document.getElementById('transcription-status').innerHTML = "🎙️ Procesando";
+                document.getElementById('transcription-status').classList.add('blinking');
+                // Mantener texto de transcripción actual pero quitar cursor caret
+                const transText = document.getElementById('transcription-text');
+                transText.innerHTML = transText.innerHTML.replace('<span class="typing-indicator">|</span>', '');
+                console.log("🎭 [WEB] Estado cambiado a Procesando con intermitencia, caret removido");
+            }
+        };
+
+        window.hideRecordingUI = () => {
+            console.log("🎭 [WEB] hideRecordingUI llamado - ocultando caja sin cambiar texto");
+            const transBox = document.getElementById('transcription-box');
+            if (transBox) {
+                transBox.classList.remove('visible');
             }
         };
 
@@ -66,6 +107,18 @@
             console.log("🎭 [WEB] updateTranscription llamado con:", text);
             const transText = document.getElementById('transcription-text');
             if (transText) {
+                // Para transcripción final, sin cursor caret
+                transText.innerHTML = text;
+            } else {
+                console.error("🎭 [WEB] ERROR: Elemento transcription-text no encontrado");
+            }
+        };
+
+        window.updateLiveTranscription = (text) => {
+            console.log("🎭 [WEB] updateLiveTranscription llamado con:", text);
+            const transText = document.getElementById('transcription-text');
+            if (transText) {
+                // Para transcripción en tiempo real, con cursor caret
                 transText.innerHTML = text + " <span class='typing-indicator'>|</span>";
             } else {
                 console.error("🎭 [WEB] ERROR: Elemento transcription-text no encontrado");
@@ -124,12 +177,35 @@
                 console.log("🎭 [WEB] Timer cancelado");
             }
         };
+        
+        window.updateVolumeMeter = (level) => {
+            const volumeBar = document.getElementById('volume-bar');
+            if (volumeBar) {
+                // Level es un valor entre 0 y 1
+                const percentage = Math.min(Math.max(level * 100, 0), 100);
+                volumeBar.style.width = percentage + '%';
+                
+                // Cambiar color según nivel
+                if (percentage < 30) {
+                    volumeBar.style.background = '#00ff66';
+                } else if (percentage < 60) {
+                    volumeBar.style.background = '#00ffcc';
+                } else if (percentage < 80) {
+                    volumeBar.style.background = '#ffcc00';
+                } else {
+                    volumeBar.style.background = '#ff6666';
+                }
+            }
+        };
     </script>
 </head>
 <body>
     <div id="transcription-box">
-        <span style="color: #888; font-size: 12px; text-transform: uppercase;">🎙️ Escuchando</span>
+        <span id="transcription-status" style="color: #888; font-size: 12px; text-transform: uppercase;">🎙️ Escuchando</span>
         <div id="transcription-text" style="margin-top: 8px;">...</div>
+        <div id="volume-meter">
+            <div id="volume-bar"></div>
+        </div>
     </div>
     <div id="ready-notification">
         <span style="color: #fff; font-size: 16px; font-weight: bold;">✅ Sistema Listo</span>

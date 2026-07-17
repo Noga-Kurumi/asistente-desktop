@@ -2,11 +2,13 @@ import os
 import sys
 import json
 import re
+import numpy as np
+import sounddevice as sd
 from pynput import keyboard
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
                                 QLabel, QLineEdit, QTextEdit, QCheckBox, QPushButton, 
-                                QComboBox, QMessageBox)
-from PySide6.QtCore import Qt, QObject, Signal
+                                QComboBox, QMessageBox, QProgressBar)
+from PySide6.QtCore import Qt, QObject, Signal, QTimer
 from PySide6.QtGui import QIcon
 
 # Importar función para obtener voces disponibles
@@ -74,7 +76,18 @@ class SetupWindow(QWidget):
         if os.path.exists(icon_path):
             self.app_icon = QIcon(icon_path)
         
+        # Variables para test de micrófono
+        self.test_stream = None
+        self.test_timer = QTimer()
+        self.test_timer.timeout.connect(self.update_volume_meter)
+        self.current_volume = 0
+        
         self.init_ui()
+    
+    def closeEvent(self, event):
+        """Limpiar recursos al cerrar la ventana"""
+        self.stop_mic_test()
+        event.accept()
 
     def load_config(self):
         default_config = {
@@ -84,7 +97,8 @@ class SetupWindow(QWidget):
             "active_voice": "", 
             "launch_with_system": False,
             "hotkey": "Key.alt_r",
-            "custom_instructions": ""
+            "custom_instructions": "",
+            "audio_device": None
         }
         if os.path.exists(CONFIG_FILE):
             try:
@@ -142,6 +156,27 @@ class SetupWindow(QWidget):
         self.populate_voices_combo(self.combo_voice, self.config_data.get("active_voice", ""))
         layout.addWidget(self.combo_voice)
 
+        layout.addWidget(QLabel("Dispositivo de Audio (Micrófono):"))
+        self.combo_audio = QComboBox()
+        self.populate_audio_devices()
+        layout.addWidget(self.combo_audio)
+
+        # Test de micrófono
+        audio_test_layout = QHBoxLayout()
+        self.btn_test_mic = QPushButton("Testear Micrófono")
+        self.btn_test_mic.clicked.connect(self.toggle_mic_test)
+        self.btn_test_mic.setCheckable(True)
+        audio_test_layout.addWidget(self.btn_test_mic)
+        
+        self.volume_bar = QProgressBar()
+        self.volume_bar.setRange(0, 100)
+        self.volume_bar.setValue(0)
+        self.volume_bar.setTextVisible(False)
+        self.volume_bar.setStyleSheet("QProgressBar::chunk { background-color: #4CAF50; }")
+        audio_test_layout.addWidget(self.volume_bar)
+        
+        layout.addLayout(audio_test_layout)
+
         self.check_startup = QCheckBox("Iniciar con Windows")
         self.check_startup.setChecked(self.config_data.get("launch_with_system", False))
         layout.addWidget(self.check_startup)
@@ -193,6 +228,84 @@ class SetupWindow(QWidget):
             if index >= 0:
                 combo.setCurrentIndex(index)
 
+    def populate_audio_devices(self):
+        """Poblar el combo con dispositivos de audio de entrada"""
+        try:
+            devices = sd.query_devices()
+            current_device = self.config_data.get("audio_device")
+            
+            for i, dev in enumerate(devices):
+                if dev['max_input_channels'] > 0:
+                    device_name = f"[{i}] {dev['name']}"
+                    self.combo_audio.addItem(device_name, i)
+                    
+                    # Seleccionar dispositivo actual si coincide
+                    if current_device is not None and i == current_device:
+                        self.combo_audio.setCurrentIndex(self.combo_audio.count() - 1)
+        except Exception as e:
+            print(f"Error listando dispositivos de audio: {e}")
+            self.combo_audio.addItem("Error cargando dispositivos")
+
+    def toggle_mic_test(self):
+        """Iniciar/detener el test de micrófono"""
+        if self.btn_test_mic.isChecked():
+            # Iniciar test
+            device_index = self.combo_audio.currentData()
+            if device_index is None:
+                self.btn_test_mic.setChecked(False)
+                QMessageBox.warning(self, "Error", "Selecciona un dispositivo de audio primero")
+                return
+            
+            try:
+                self.test_stream = sd.InputStream(
+                    samplerate=16000,
+                    channels=1,
+                    dtype='float32',
+                    callback=self.audio_callback,
+                    device=device_index
+                )
+                self.test_stream.start()
+                self.test_timer.start(50)  # Actualizar cada 50ms
+                self.btn_test_mic.setText("Detener Test")
+            except Exception as e:
+                self.btn_test_mic.setChecked(False)
+                QMessageBox.warning(self, "Error", f"No se pudo iniciar el test: {e}")
+        else:
+            # Detener test
+            self.stop_mic_test()
+
+    def stop_mic_test(self):
+        """Detener el test de micrófono"""
+        if self.test_stream:
+            try:
+                self.test_stream.stop()
+                self.test_stream.close()
+            except:
+                pass
+            self.test_stream = None
+        
+        self.test_timer.stop()
+        self.volume_bar.setValue(0)
+        self.btn_test_mic.setText("Testear Micrófono")
+
+    def audio_callback(self, indata, frames, time_info, status):
+        """Callback para capturar audio del micrófono"""
+        if status:
+            print(f"Audio callback status: {status}")
+        
+        # Calcular nivel de volumen (RMS)
+        rms = np.sqrt(np.mean(indata ** 2))
+        # Normalizar a 0-100 para la barra de progreso
+        level = min(rms * 1000, 100)
+        
+        # Guardar el nivel para actualizar en el hilo principal
+        self.current_volume = level
+
+    def update_volume_meter(self):
+        """Actualizar la barra de volumen en el hilo principal"""
+        if hasattr(self, 'current_volume'):
+            self.volume_bar.setValue(int(self.current_volume))
+
     def start_key_capture(self):
         self.btn_hotkey.setText("Escuchando... Presioná una tecla")
         self.btn_hotkey.setEnabled(False)
@@ -222,6 +335,10 @@ class SetupWindow(QWidget):
             self.label_provider.setStyleSheet("color: #888; font-size: 11px;")
 
     def save_config(self):
+        # Detener test de micrófono si está activo
+        if self.btn_test_mic.isChecked():
+            self.stop_mic_test()
+        
         # Guardar configuración anterior para detectar cambios
         old_config = self.config_data.copy() if os.path.exists(CONFIG_FILE) else {}
         
@@ -247,6 +364,10 @@ class SetupWindow(QWidget):
         if voice_val is None:
             voice_val = self.combo_voice.currentText()
         self.config_data["active_voice"] = voice_val if voice_val and voice_val != "Error cargando voces" else ""
+        
+        # Guardar dispositivo de audio
+        audio_device = self.combo_audio.currentData()
+        self.config_data["audio_device"] = audio_device
         
         self.config_data["launch_with_system"] = self.check_startup.isChecked()
 
