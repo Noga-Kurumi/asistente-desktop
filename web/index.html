@@ -8,14 +8,53 @@
         canvas { display: block; }
         #transcription-box {
             position: absolute; bottom: -150px; right: 50px; width: 320px;
+            max-height: 400px;
             background: rgba(15, 15, 20, 0.9); border: 1px solid #00ffcc;
             border-radius: 12px; padding: 15px; color: #fff;
             font-family: 'Segoe UI', Tahoma, sans-serif; font-size: 14px;
             box-shadow: 0px 4px 15px rgba(0,0,0,0.5);
-            transition: bottom 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            transition: bottom 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), 
+                        opacity 0.3s ease-in-out,
+                        max-height 0.3s ease-in-out,
+                        background-color 0.3s ease-in-out;
             z-index: 10;
+            overflow-y: auto;
         }
         #transcription-box.visible { bottom: 40px; }
+        #transcription-box.hiding {
+            opacity: 0;
+            max-height: 0;
+            padding: 0;
+            margin: 0;
+            visibility: hidden;
+        }
+        #transcription-box.error-flash {
+            background-color: rgba(255, 0, 0, 0.3);
+            border-color: rgba(255, 0, 0, 0.8);
+        }
+        #transcription-status, #transcription-text, #volume-meter {
+            transition: opacity 0.3s ease-in-out;
+        }
+        #chat-content {
+            transition: opacity 0.3s ease-in-out;
+        }
+        .fade-out {
+            opacity: 0;
+        }
+        .fade-in {
+            opacity: 1;
+        }
+        #transcription-box::-webkit-scrollbar {
+            width: 6px;
+        }
+        #transcription-box::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+        }
+        #transcription-box::-webkit-scrollbar-thumb {
+            background: rgba(0, 255, 204, 0.5);
+            border-radius: 3px;
+        }
         #transcription-status.blinking {
             animation: blink 1s infinite;
         }
@@ -78,8 +117,31 @@
             
             if (isRecording) {
                 console.log("🎭 [WEB] Mostrando UI de grabación (Escuchando...)");
-                window.setAvatarState("hidden");
+                // Resetear estilos inline que puedan estar ocultando la caja
+                transBox.style.visibility = 'visible';
+                transBox.style.opacity = '1';
+                transBox.classList.remove('hiding');
                 transBox.classList.add('visible');
+                
+                // Asegurar que los elementos de transcripción estén visibles
+                const transStatus = document.getElementById('transcription-status');
+                const transText = document.getElementById('transcription-text');
+                const volumeMeter = document.getElementById('volume-meter');
+                const chatContent = document.getElementById('chat-content');
+                
+                transStatus.style.display = 'inline';
+                transText.style.display = 'block';
+                volumeMeter.style.display = 'block';
+                chatContent.style.display = 'none';
+                
+                transStatus.style.opacity = '1';
+                transText.style.opacity = '1';
+                volumeMeter.style.opacity = '1';
+                
+                transStatus.classList.remove('fade-out', 'fade-in');
+                transText.classList.remove('fade-out', 'fade-in');
+                volumeMeter.classList.remove('fade-out', 'fade-in');
+                
                 document.getElementById('transcription-status').innerHTML = "🎙️ Escuchando";
                 document.getElementById('transcription-status').classList.remove('blinking');
                 document.getElementById('transcription-text').innerHTML = "...";
@@ -122,6 +184,107 @@
                 transText.innerHTML = text + " <span class='typing-indicator'>|</span>";
             } else {
                 console.error("🎭 [WEB] ERROR: Elemento transcription-text no encontrado");
+            }
+        };
+
+        window.transitionToChatMode = (userName, userText) => {
+            console.log("🎭 [WEB] transitionToChatMode llamado con:", userName, userText);
+            const transBox = document.getElementById('transcription-box');
+            const transStatus = document.getElementById('transcription-status');
+            const transText = document.getElementById('transcription-text');
+            const volumeMeter = document.getElementById('volume-meter');
+            const chatContent = document.getElementById('chat-content');
+            const userNameEl = document.getElementById('user-name');
+            const userTextEl = document.getElementById('user-text');
+            const assistantNameEl = document.getElementById('assistant-name');
+            
+            if (!transBox || !chatContent) {
+                console.error("🎭 [WEB] ERROR: Elementos de chat no encontrados");
+                return;
+            }
+            
+            // Configurar información del usuario y asistente primero
+            userNameEl.innerHTML = userName;
+            userTextEl.innerHTML = userText;
+            assistantNameEl.innerHTML = window.avatarName || "Asistente";
+            
+            // Animación de fade out para elementos de transcripción
+            transStatus.classList.add('fade-out');
+            transText.classList.add('fade-out');
+            volumeMeter.classList.add('fade-out');
+            
+            // Después del fade out, ocultar elementos y mostrar chat con fade in
+            setTimeout(() => {
+                transStatus.style.display = 'none';
+                transText.style.display = 'none';
+                volumeMeter.style.display = 'none';
+                
+                chatContent.style.display = 'block';
+                chatContent.classList.add('fade-out');
+                
+                // Pequeño delay para que el fade in funcione correctamente
+                setTimeout(() => {
+                    chatContent.classList.remove('fade-out');
+                    chatContent.classList.add('fade-in');
+                }, 50);
+            }, 300);
+            
+            console.log("🎭 [WEB] Transición a modo chat iniciada con animación");
+        };
+
+        window.showAssistantResponse = (response, isFallback = false) => {
+            console.log("🎭 [WEB] showAssistantResponse llamado con:", response, "isFallback:", isFallback);
+            const assistantTextEl = document.getElementById('assistant-text');
+            if (assistantTextEl) {
+                if (isFallback) {
+                    // Efecto de máquina de escribir por palabra para fallbacks
+                    const words = response.split(' ');
+                    assistantTextEl.innerHTML = '';
+                    let wordIndex = 0;
+                    
+                    function typeWord() {
+                        if (wordIndex < words.length) {
+                            assistantTextEl.innerHTML += (wordIndex > 0 ? ' ' : '') + words[wordIndex];
+                            wordIndex++;
+                            setTimeout(typeWord, 100); // 100ms entre palabras
+                        }
+                    }
+                    typeWord();
+                } else {
+                    // Mostrar respuesta normal inmediatamente
+                    assistantTextEl.innerHTML = response;
+                }
+                console.log("🎭 [WEB] Respuesta de asistente mostrada");
+            } else {
+                console.error("🎭 [WEB] ERROR: Elemento assistant-text no encontrado");
+            }
+        };
+
+        window.hideChat = () => {
+            console.log("🎭 [WEB] hideChat llamado - ocultando caja de chat con animación");
+            const transBox = document.getElementById('transcription-box');
+            if (transBox) {
+                // Primero agregar clase hiding para animación
+                transBox.classList.add('hiding');
+                // Después de la animación, quitar visible y asegurar invisibilidad
+                setTimeout(() => {
+                    transBox.classList.remove('visible');
+                    transBox.classList.remove('hiding');
+                    // Asegurar invisibilidad completa por seguridad
+                    transBox.style.visibility = 'hidden';
+                    transBox.style.opacity = '0';
+                }, 300);
+            }
+        };
+
+        window.flashError = () => {
+            console.log("🎭 [WEB] flashError llamado - mostrando flash rojo en caja");
+            const transBox = document.getElementById('transcription-box');
+            if (transBox) {
+                transBox.classList.add('error-flash');
+                setTimeout(() => {
+                    transBox.classList.remove('error-flash');
+                }, 1000);
             }
         };
 
@@ -205,6 +368,17 @@
         <div id="transcription-text" style="margin-top: 8px;">...</div>
         <div id="volume-meter">
             <div id="volume-bar"></div>
+        </div>
+        <div id="chat-content" style="display: none;">
+            <div id="user-section">
+                <span id="user-name" style="color: #888; font-size: 12px; text-transform: uppercase;"></span>
+                <div id="user-text" style="margin-top: 8px;"></div>
+            </div>
+            <hr id="chat-divider" style="border: 0; border-top: 1px solid #444; margin: 12px 0;">
+            <div id="assistant-section">
+                <span id="assistant-name" style="color: #888; font-size: 12px; text-transform: uppercase;"></span>
+                <div id="assistant-text" style="margin-top: 8px;"></div>
+            </div>
         </div>
     </div>
     <div id="ready-notification">
@@ -586,9 +760,7 @@
             } else if(state === "idle") {
                 avatarTargetY = avatarBaseY;
                 currentVrm.expressionManager.setValue('neutral', 0.2);
-                hideTimeout = setTimeout(() => {
-                    if (window.avatarState === "idle") window.setAvatarState("hidden");
-                }, 4000);
+                // Timer de ocultamiento eliminado - ahora controlado desde Python
             }
         };
 

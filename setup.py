@@ -13,6 +13,7 @@ from PySide6.QtGui import QIcon
 
 # Importar función para obtener voces disponibles
 from modules.tts_core import get_available_voices
+from modules.api_brain import AssistantBrain
 
 # Usar ruta absoluta para config.json
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
@@ -98,7 +99,10 @@ class SetupWindow(QWidget):
             "launch_with_system": False,
             "hotkey": "Key.alt_r",
             "custom_instructions": "",
-            "audio_device": None
+            "audio_device": None,
+            "whisper_model": "tiny",
+            "whisper_quantization": "none",
+            "gemini_model": ""
         }
         if os.path.exists(CONFIG_FILE):
             try:
@@ -132,6 +136,12 @@ class SetupWindow(QWidget):
         self.label_provider.setStyleSheet("color: #888; font-size: 11px;")
         layout.addWidget(self.label_provider)
         
+        # Dropdown de modelos (inicialmente vacío)
+        layout.addWidget(QLabel("Modelo:"))
+        self.combo_model = QComboBox()
+        self.combo_model.addItem("Configura API key primero", "")
+        layout.addWidget(self.combo_model)
+        
         # Inicializar detección de proveedor
         self.on_api_key_changed(self.input_api.text())
 
@@ -155,6 +165,31 @@ class SetupWindow(QWidget):
         self.combo_voice = QComboBox()
         self.populate_voices_combo(self.combo_voice, self.config_data.get("active_voice", ""))
         layout.addWidget(self.combo_voice)
+
+        layout.addWidget(QLabel("Modelo Whisper:"))
+        self.combo_whisper_model = QComboBox()
+        self.combo_whisper_model.addItem("Tiny (Rápido, menos preciso)", "tiny")
+        self.combo_whisper_model.addItem("Small (Más preciso, más lento)", "small")
+        
+        # Seleccionar modelo actual
+        current_model = self.config_data.get("whisper_model", "tiny")
+        index = self.combo_whisper_model.findData(current_model)
+        if index >= 0:
+            self.combo_whisper_model.setCurrentIndex(index)
+        layout.addWidget(self.combo_whisper_model)
+
+        layout.addWidget(QLabel("Cuantización Whisper:"))
+        self.combo_whisper_quant = QComboBox()
+        self.combo_whisper_quant.addItem("Sin cuantización (FP16)", "none")
+        self.combo_whisper_quant.addItem("Q5_1 (Balance tamaño/calidad)", "q5_1")
+        self.combo_whisper_quant.addItem("Q8_0 (Mejor calidad quantizada)", "q8_0")
+        
+        # Seleccionar cuantización actual
+        current_quant = self.config_data.get("whisper_quantization", "none")
+        index = self.combo_whisper_quant.findData(current_quant)
+        if index >= 0:
+            self.combo_whisper_quant.setCurrentIndex(index)
+        layout.addWidget(self.combo_whisper_quant)
 
         layout.addWidget(QLabel("Dispositivo de Audio (Micrófono):"))
         self.combo_audio = QComboBox()
@@ -228,6 +263,57 @@ class SetupWindow(QWidget):
             if index >= 0:
                 combo.setCurrentIndex(index)
 
+    def populate_gemini_models(self):
+        """Poblar el combo con modelos Gemini disponibles"""
+        try:
+            print(f"🔍 [SETUP] Iniciando populate_gemini_models")
+            
+            # Verificar si hay API key de Gemini
+            api_key = self.config_data.get("api_key", "")
+            print(f"🔍 [SETUP] API key presente: {bool(api_key)}")
+            
+            if not api_key:
+                self.combo_model.addItem("Configura API key primero", "")
+                return
+            
+            # Verificar si el proveedor es Gemini
+            provider = detect_provider(api_key)
+            print(f"🔍 [SETUP] Proveedor detectado: {provider}")
+            
+            if provider != "gemini":
+                self.combo_model.addItem("Solo disponible con Gemini", "")
+                return
+            
+            # Llamar directamente al método estático con la API key
+            print(f"🔍 [SETUP] Llamando a get_gemini_models con API key")
+            brain = AssistantBrain()
+            models = brain.get_gemini_models(api_key=api_key)
+            print(f"🔍 [SETUP] Modelos obtenidos: {len(models)}")
+            
+            if not models:
+                self.combo_model.addItem("No se encontraron modelos", "")
+                return
+            
+            # Agregar modelos al combo con display_name
+            for model in models:
+                self.combo_model.addItem(model['display_name'], model['name'])
+            
+            # Seleccionar modelo actual
+            current_model = self.config_data.get("gemini_model", "")
+            if current_model:
+                index = self.combo_model.findData(current_model)
+                if index >= 0:
+                    self.combo_model.setCurrentIndex(index)
+            elif self.combo_model.count() > 0:
+                # Seleccionar el primero por defecto
+                self.combo_model.setCurrentIndex(0)
+                
+        except Exception as e:
+            print(f"❌ [SETUP] Error en populate_gemini_models: {e}")
+            import traceback
+            traceback.print_exc()
+            self.combo_model.addItem("Error cargando modelos", "")
+
     def populate_audio_devices(self):
         """Poblar el combo con dispositivos de audio de entrada"""
         try:
@@ -243,7 +329,6 @@ class SetupWindow(QWidget):
                     if current_device is not None and i == current_device:
                         self.combo_audio.setCurrentIndex(self.combo_audio.count() - 1)
         except Exception as e:
-            print(f"Error listando dispositivos de audio: {e}")
             self.combo_audio.addItem("Error cargando dispositivos")
 
     def toggle_mic_test(self):
@@ -324,15 +409,23 @@ class SetupWindow(QWidget):
         if provider == "anthropic":
             self.label_provider.setText("✓ Anthropic detectado")
             self.label_provider.setStyleSheet("color: #4CAF50; font-size: 11px; font-weight: bold;")
+            self.combo_model.clear()
+            self.combo_model.addItem("Anthropic usa modelo fijo", "")
         elif provider == "gemini":
             self.label_provider.setText("✓ Gemini detectado")
             self.label_provider.setStyleSheet("color: #4CAF50; font-size: 11px; font-weight: bold;")
+            # Poblar modelos de Gemini
+            self.populate_gemini_models()
         elif text.strip():
             self.label_provider.setText("✗ Clave inválida")
             self.label_provider.setStyleSheet("color: #F44336; font-size: 11px;")
+            self.combo_model.clear()
+            self.combo_model.addItem("Clave inválida", "")
         else:
             self.label_provider.setText("No hay clave")
             self.label_provider.setStyleSheet("color: #888; font-size: 11px;")
+            self.combo_model.clear()
+            self.combo_model.addItem("Configura API key primero", "")
 
     def save_config(self):
         # Detener test de micrófono si está activo
@@ -368,6 +461,18 @@ class SetupWindow(QWidget):
         # Guardar dispositivo de audio
         audio_device = self.combo_audio.currentData()
         self.config_data["audio_device"] = audio_device
+        
+        # Guardar configuración de whisper
+        self.config_data["whisper_model"] = self.combo_whisper_model.currentData()
+        self.config_data["whisper_quantization"] = self.combo_whisper_quant.currentData()
+        
+        # Guardar modelo seleccionado
+        selected_model = self.combo_model.currentData()
+        if selected_model and selected_model not in ["", "Configura API key primero", "Anthropic usa modelo fijo", "Solo disponible con Gemini", "No se encontraron modelos", "Error cargando modelos", "Clave inválida"]:
+            self.config_data["gemini_model"] = selected_model
+        else:
+            # Limpiar el modelo si no es válido
+            self.config_data["gemini_model"] = ""
         
         self.config_data["launch_with_system"] = self.check_startup.isChecked()
 

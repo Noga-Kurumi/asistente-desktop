@@ -185,3 +185,7 @@ cython_debug/
 .cursorindexingignore
 models/ggml-tiny.bin
 models/ggml-small.bin
+
+# Config local con API keys
+config.json
+*.bin

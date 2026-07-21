@@ -12,7 +12,7 @@ from google import genai
 from google.genai import types
 from PySide6.QtCore import QObject, Signal
 
-CONFIG_FILE = "config.json"
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json")
 
 class AssistantBrain(QObject):
     # Señales para comunicarse con la UI y el Audio Core
@@ -35,13 +35,20 @@ class AssistantBrain(QObject):
         if self.api_provider == "gemini":
             # NUEVO SDK: Se instancia un cliente
             self.client = genai.Client(api_key=self.config.get("api_key", ""))
+            # Cargar modelo Gemini desde config o usar default
+            self.gemini_model = self.config.get("gemini_model", "gemini-2.0-flash")
         else:
             self.client = Anthropic(api_key=self.config.get("api_key", ""))
+            self.gemini_model = None
         
-        self._check_screenpipe_availability()
+        # Verificar disponibilidad de Screenpipe
+        self.screenpipe_available = self._check_screenpipe_availability()
+        
+        # Captura de pantalla guardada (tomada al iniciar grabación)
+        self.captured_image = None
         
         custom_inst = self.config.get("custom_instructions", "")
-        avatar_name = self.config.get("avatar_name", "Kurumi")
+        avatar_name = self.config.get("avatar_name", "Lindsay")
 
         self.system_prompt = f"""
         You are a virtual desktop assistant named {avatar_name} for a senior developer named {self.config.get('username', 'Usuario')}. 
@@ -50,9 +57,7 @@ class AssistantBrain(QObject):
         STRICT RULES:
         1. PERSONA: Speak entirely in Neutral Spanish (Español Neutro). DO NOT use any regional slang, idioms, or colloquialisms. Maintain a direct, natural, and professional tone.
         2. IDENTITY: Your name is {avatar_name}. You may introduce yourself as {avatar_name} and refer to yourself by this name when appropriate.
-        3. POINTING ACTION: If the user asks about something visual on the screen and you can identify its location, you MUST include the tag <PointTo, X, Y> in your response (where X and Y are the approximate pixel coordinates). Example: "El error está acá <PointTo, 450, 800> en la línea 42."
-        4. FORMATTING: Do NOT use complex Markdown (no bolding, no code blocks) because your response will be read aloud by a TTS engine. Speak naturally.
-        5. TOOL USE: If asked about recent past events or errors no longer on screen, use the 'search_screenpipe' tool to query the OCR logs.
+        3. FORMATTING: Do NOT use complex Markdown (no bolding, no code blocks) because your response will be read aloud by a TTS engine. Speak naturally.
 
         CUSTOM USER INSTRUCTIONS:
         {custom_inst if custom_inst else "None."}
@@ -68,62 +73,138 @@ class AssistantBrain(QObject):
         return {}
 
     def _check_screenpipe_availability(self):
-        """Verifica si Screenpipe está disponible al inicio y loguea el resultado."""
+        """Verifica si Screenpipe está disponible al inicio y devuelve el resultado."""
         try:
             response = requests.get(
                 "http://localhost:3030/search", 
                 params={"q": "test", "limit": 1, "content_type": "ocr"},
                 timeout=1.0
             )
-            if response.status_code == 200:
-                print("✅ [SCREENPIPE] Screenpipe disponible")
+            return response.status_code == 200
         except Exception:
-            pass
+            return False
 
-    def capture_screen_compressed(self):
-        """Captura el monitor principal y lo comprime agresivamente para ahorrar tokens/costos."""
+    def get_gemini_models(self, api_key=None):
+        """Obtiene la lista de modelos Gemini disponibles que soportan vision y generateContent.
+        
+        Args:
+            api_key: API key opcional. Si se proporciona, usa esta key en lugar de la del config.
+        """
+        print(f"🔍 [BRAIN] get_gemini_models() llamado")
+        
+        # Usar la API key proporcionada o la del config
+        key_to_use = api_key or self.config.get("api_key", "")
+        
+        if not key_to_use:
+            print(f"🔍 [BRAIN] No hay API key, retornando []")
+            return []
+        
+        try:
+            print(f"🔍 [BRAIN] Creando cliente temporal con API key")
+            # Crear cliente temporal con la API key proporcionada
+            temp_client = genai.Client(api_key=key_to_use)
+            
+            print(f"🔍 [BRAIN] Obteniendo modelos Gemini...")
+            models = temp_client.models.list()
+            available_models = []
+            
+            # Convertir el iterador a lista para poder contar
+            models_list = list(models)
+            print(f"🔍 [BRAIN] Total de modelos encontrados: {len(models_list)}")
+            
+            for model in models_list:
+                # Extraer solo el nombre del modelo (quitar 'models/' prefijo)
+                model_name = model.name
+                if model_name.startswith("models/"):
+                    model_name = model_name[7:]
+                
+                name_lower = model_name.lower()
+                
+                # El nuevo SDK usa 'supported_actions' en lugar de 'supported_generation_methods'
+                actions = model.supported_actions or []
+                actions_lower = [action.lower() for action in actions]
+                
+                # 1. ¿Genera texto, imágenes y corre MCP? (Se llama 'generatecontent')
+                if "generatecontent" not in actions_lower:
+                    print(f"⏭️ [BRAIN] Modelo excluido (no soporta generateContent): {model_name}")
+                    continue
+                    
+                # 2. Solo la familia Gemini
+                if "gemini" not in name_lower:
+                    print(f"⏭️ [BRAIN] Modelo excluido (no es Gemini): {model_name}")
+                    continue
+                    
+                # 3. Excluir experimentales o versiones inestables de testing
+                if "-exp" in name_lower or "preview" in name_lower or "experimental" in name_lower:
+                    print(f"⏭️ [BRAIN] Modelo excluido (experimental/preview): {model_name}")
+                    continue
+                    
+                # FIX NUEVO: Excluir especializaciones de imagen pura o audio nativo
+                if "-image" in name_lower or "-audio" in name_lower:
+                    print(f"⏭️ [BRAIN] Modelo excluido (especialización imagen/audio): {model_name}")
+                    continue
+                    
+                # 4. Mantener solo los Flash (Los reyes del free-tier)
+                if "flash" not in name_lower:
+                    print(f"⏭️ [BRAIN] Modelo excluido (no es flash): {model_name}")
+                    continue
+                    
+                # Si pasó todos los filtros, sirve para tu agente
+                display_name = model.display_name if hasattr(model, 'display_name') else model_name
+                model_info = {
+                    'name': model_name,
+                    'display_name': display_name
+                }
+                
+                available_models.append(model_info)
+                print(f"✅ [BRAIN] Clon listo: {model_name} ({display_name})")
+            
+            # Ordenar por nombre
+            available_models.sort(key=lambda x: x['name'])
+            
+            print(f"🔍 [BRAIN] Modelos disponibles después del filtro: {len(available_models)}")
+            
+            return available_models
+        except Exception as e:
+            print(f"❌ [BRAIN] Error obteniendo modelos Gemini: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+    @staticmethod
+    def _get_primary_monitor(sct):
+        """Elige el monitor principal: el que empieza en (0,0). Fallback: el primero real."""
+        real_monitors = sct.monitors[1:]  # monitors[0] es el bounding box combinado
+        for mon in real_monitors:
+            if mon["left"] == 0 and mon["top"] == 0:
+                return mon
+        return real_monitors[0]
+
+    def capture_screen_bytes(self):
+        """Captura el monitor principal y devuelve JPEG comprimido en bytes."""
         try:
             with mss() as sct:
-                monitor = sct.monitors[1]
+                monitor = self._get_primary_monitor(sct)
                 sct_img = sct.grab(monitor)
                 img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-                
-                # Compresión a 720p (Suficiente para el OCR interno de Claude)
+
+                # Compresión a 720p (suficiente para el OCR interno del LLM)
                 target_width = 1280
                 if img.size[0] > target_width:
                     ratio = target_width / float(img.size[0])
                     target_height = int(float(img.size[1]) * ratio)
                     img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
-                
+
                 buffer = io.BytesIO()
-                # Calidad 60 para ultra-compresión de JPEG
                 img.save(buffer, format="JPEG", quality=60)
-                img_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
-                return img_b64
+                return buffer.getvalue()
         except Exception as e:
-            print(f"❌ [VISIÓN] Error al capturar: {e}")
+            print(f"❌ [VISIÓN] Error al capturar pantalla: {e}")
             return None
 
-    def capture_screen_bytes(self):
-            """Devuelve los bytes crudos en lugar de Base64 para Gemini."""
-            try:
-                with mss() as sct:
-                    monitor = sct.monitors[1]
-                    sct_img = sct.grab(monitor)
-                    img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-                    
-                    target_width = 1280
-                    if img.size[0] > target_width:
-                        ratio = target_width / float(img.size[0])
-                        target_height = int(float(img.size[1]) * ratio)
-                        img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
-                    
-                    buffer = io.BytesIO()
-                    img.save(buffer, format="JPEG", quality=60)
-                    return buffer.getvalue() # Retornamos bytes puros para Gemini
-            except Exception as e:
-                print(f"❌ [VISIÓN] Error al capturar: {e}")
-                return None
+    def capture_and_store_screen(self):
+        """Captura la pantalla actual (bytes JPEG) y la guarda para el próximo query."""
+        self.captured_image = self.capture_screen_bytes()
 
     def search_screenpipe_local(self, query, limit=5):
         """Hace un request rápido al daemon local de Screenpipe."""
@@ -144,7 +225,11 @@ class AssistantBrain(QObject):
     def _trim_history_gemini(self):
         """Poda el historial específico para el formato de Gemini."""
         if len(self.message_history) > self.MAX_HISTORY:
-            self.message_history = self.message_history[-self.MAX_HISTORY:]
+            # Mantener siempre el primer mensaje si existe (para contexto inicial)
+            if len(self.message_history) > 1:
+                self.message_history = [self.message_history[0]] + self.message_history[-(self.MAX_HISTORY-1):]
+            else:
+                self.message_history = self.message_history[-self.MAX_HISTORY:]
 
     def _trim_history_anthropic(self):
         """Tu lógica original de podado para Anthropic."""
@@ -173,7 +258,7 @@ class AssistantBrain(QObject):
 
     def _run_gemini_chain(self, user_prompt):
             self.thinking_started.emit()
-            img_bytes = self.capture_screen_bytes()
+            img_bytes = self.captured_image
             
             try:
                 # 1. Armamos el payload del turno actual
@@ -182,19 +267,19 @@ class AssistantBrain(QObject):
                     current_turn_parts.append(
                         types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
                     )
-                current_turn_parts.append(user_prompt)
+                current_turn_parts.append(types.Part(text=user_prompt))
 
                 # 2. Agregamos el input del usuario a la memoria
-                self.message_history.append({"role": "user", "parts": current_turn_parts})
+                self.message_history.append(types.Content(role="user", parts=current_turn_parts))
                 self._trim_history_gemini()
                 
                 # 3. Llamada con el NUEVO SDK usando "contents" (historial completo)
                 response = self.client.models.generate_content(
-                    model='gemini-1.5-flash',
+                    model=self.gemini_model,
                     contents=self.message_history, # Le pasamos toda la charla previa
                     config=types.GenerateContentConfig(
                         system_instruction=self.system_prompt,
-                        max_output_tokens=500,
+                        max_output_tokens=1000,
                         temperature=0.7
                     )
                 )
@@ -203,7 +288,7 @@ class AssistantBrain(QObject):
                 
                 # 4. Guardamos la respuesta del asistente en memoria
                 if full_response_text:
-                    self.message_history.append({"role": "model", "parts": [full_response_text]})
+                    self.message_history.append(types.Content(role="model", parts=[types.Part(text=full_response_text)]))
                 
                 # 5. Lógica de Pointing
                 point_pattern = re.compile(r'<PointTo,\s*(\d+),\s*(\d+)>')
@@ -225,11 +310,12 @@ class AssistantBrain(QObject):
 
     def _run_anthropic_chain(self, user_prompt):
         self.thinking_started.emit()
-        img_b64 = self.capture_screen_compressed()
+        img_bytes = self.captured_image
         
         # Armamos el input actual
         content_array = []
-        if img_b64:
+        if img_bytes:
+            img_b64 = base64.b64encode(img_bytes).decode("utf-8")
             content_array.append({
                 "type": "image",
                 "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64}

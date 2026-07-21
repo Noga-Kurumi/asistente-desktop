@@ -1,23 +1,17 @@
 import os
 import sys
-import subprocess
 import threading
 import time
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
-def _instalar_dependencias():
-    try:
-        import kokoro_onnx
-        import sounddevice
-    except ImportError:
-        print("⏳ [TTS] Instalando dependencias kokoro-onnx y sounddevice...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "kokoro-onnx", "sounddevice"])
-
-_instalar_dependencias()
-
-import sounddevice as sd
-from kokoro_onnx import Kokoro
+try:
+    import sounddevice as sd
+    from kokoro_onnx import Kokoro
+except ImportError as e:
+    raise ImportError(
+        "Faltan dependencias de TTS. Instálalas con: pip install -r requirements.txt"
+    ) from e
 
 class AssistantTTS(QObject):
     speech_started = Signal()
@@ -51,7 +45,7 @@ class AssistantTTS(QObject):
             modelo_a_usar = self.model_quant_path
             
         if not os.path.exists(modelo_a_usar) or not os.path.exists(self.voices_path):
-            print(f"❌ [TTS] Falta el modelo o las voces en la raíz del proyecto")
+            print(f"❌ [TTS] Modelo o voces no encontrados: {modelo_a_usar}, {self.voices_path}")
             return
 
         try:
@@ -59,12 +53,14 @@ class AssistantTTS(QObject):
             
             fin = time.perf_counter()
             self.is_ready = True
-            print(f"✅ [TTS] Motor listo en {(fin-inicio):.2f}s")
+            print(f"✅ [TTS] Motor Kokoro listo en {fin - inicio:.2f}s ({os.path.basename(modelo_a_usar)})")
         except Exception as e:
-            print(f"❌ [TTS] Error al cargar: {e}")
+            print(f"❌ [TTS] Error inicializando Kokoro: {e}")
 
     def process_text_async(self, text, voice="af_bella"):
         if not self.is_ready or not text.strip():
+            if not self.is_ready:
+                print("⚠️ [TTS] Motor no listo, se descarta el texto a sintetizar")
             return
         threading.Thread(target=self._generate_and_play, args=(text, voice), daemon=True).start()
 
@@ -85,7 +81,7 @@ class AssistantTTS(QObject):
             self.speech_ended.emit()
             
         except Exception as e:
-            print(f"❌ [TTS] Error en generación/reproducción: {e}")
+            print(f"❌ [TTS] Error generando/reproduciendo audio: {e}")
             self.speech_ended.emit()
 
 def get_available_voices(voices_path=None):
@@ -126,5 +122,5 @@ def get_available_voices(voices_path=None):
         
         return formatted_voices
     except Exception as e:
-        print(f"❌ [TTS] Error al cargar voces: {e}")
+        print(f"❌ [TTS] Error leyendo voces desde {voices_path}: {e}")
         return []

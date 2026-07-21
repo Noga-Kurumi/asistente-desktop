@@ -4,10 +4,11 @@ import json
 import subprocess
 import venv
 
-# Constantes de rutas
-VENV_DIR = ".venv"
-CONFIG_FILE = "config.json"
-REQUIREMENTS = "requirements.txt"
+# Constantes de rutas (ancladas al directorio del script, no al CWD)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+VENV_DIR = os.path.join(BASE_DIR, ".venv")
+CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+REQUIREMENTS = os.path.join(BASE_DIR, "requirements.txt")
 
 def is_in_venv():
     """Verifica si estamos corriendo dentro del entorno virtual."""
@@ -21,22 +22,17 @@ def get_venv_python():
 
 def setup_venv():
     """Crea el venv e instala dependencias. SOLO se llama si el venv no existe."""
-    print("🚀 [BOOT] Creando entorno virtual aislado...")
     builder = venv.EnvBuilder(with_pip=True)
     builder.create(VENV_DIR)
 
     python_executable = get_venv_python()
 
-    print("📦 [BOOT] Actualizando pip y herramientas base...")
     subprocess.check_call([python_executable, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
-
-    print("📦 [BOOT] Instalando dependencias...")
     subprocess.check_call([python_executable, "-m", "pip", "install", "-r", REQUIREMENTS, "--prefer-binary"])
 
 def relaunch_in_venv():
     """Corta la ejecución actual y la reinicia usando el Python del venv."""
     python_executable = get_venv_python()
-    print("🔄 [BOOT] Entorno detectado. Relanzando en aislamiento...")
     os.execv(python_executable, [python_executable] + sys.argv)
 
 def check_config():
@@ -70,13 +66,10 @@ def main():
 
     # --- A PARTIR DE ACÁ, YA ESTAMOS 100% ADENTRO DEL VENV ---
     
-    print("🔍 [BOOT] Chequeando configuraciones...")
     if not check_config():
-        print("⚠️ [BOOT] Faltan datos. Abriendo panel de configuración...")
         import setup
         setup.run_setup_window()
 
-    print("🔥 [BOOT] Todo en verde. Levantando el orquestador principal...")
     import main # Llamamos al archivo central
     main.run_app()
 

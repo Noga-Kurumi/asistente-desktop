@@ -10,7 +10,7 @@ from modules.whisper_wrapper import WhisperCppWrapper
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE = "config.json"
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json")
 
 class AssistantAudioCore(QObject):
     text_transcribed = Signal(str)      
@@ -32,7 +32,18 @@ class AssistantAudioCore(QObject):
         # Inicializar wrapper de whisper.cpp
         base_dir = os.path.dirname(os.path.dirname(__file__))
         exe_path = os.path.join(base_dir, "whisper_cpp", "Release", "whisper-cli.exe")
-        model_path = os.path.join(base_dir, "models", "ggml-tiny.bin")
+        
+        # Leer modelo y cuantización desde configuración
+        whisper_model = self.config.get("whisper_model", "tiny")
+        whisper_quant = self.config.get("whisper_quantization", "none")
+        
+        # Construir nombre del archivo según cuantización
+        if whisper_quant == "none":
+            model_filename = f"ggml-{whisper_model}.bin"
+        else:
+            model_filename = f"ggml-{whisper_model}-{whisper_quant}.bin"
+        
+        model_path = os.path.join(base_dir, "models", model_filename)
         
         self.whisper = WhisperCppWrapper(
             exe_path=exe_path,
@@ -41,7 +52,7 @@ class AssistantAudioCore(QObject):
             n_threads=2
         )
         
-        logger.info(f"✅ [AUDIO_CORE] Wrapper whisper.cpp inicializado")
+        logger.info(f"✅ [AUDIO_CORE] Modelo de whisper: {whisper_model}, Cuantización: {whisper_quant}")
 
     def _load_config(self):
         if os.path.exists(CONFIG_FILE):

@@ -24,18 +24,17 @@ class LocalHTTPServer:
         self.thread = None
         
     def start(self):
-        """Inicia el servidor en un hilo separado"""
-        os.chdir(self.web_dir)
-        self.server = HTTPServer(('localhost', self.port), SimpleHTTPRequestHandler)
+        """Inicia el servidor en un hilo separado (sin cambiar el CWD del proceso)"""
+        import functools
+        handler = functools.partial(SimpleHTTPRequestHandler, directory=self.web_dir)
+        self.server = HTTPServer(('localhost', self.port), handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
-        print(f"🌐 [AVATAR] Servidor HTTP iniciado en http://localhost:{self.port}")
         
     def stop(self):
         """Detiene el servidor"""
         if self.server:
             self.server.shutdown()
-            print(f"🌐 [AVATAR] Servidor HTTP detenido")
             
     def get_url(self, path="index.html"):
         """Retorna la URL completa para un archivo"""
@@ -80,7 +79,6 @@ class AvatarWindow(QWidget):
         if os.path.exists(source_path):
             try:
                 shutil.copy2(source_path, dest_path)
-                print(f"🎭 [AVATAR] Avatar copiado: {self.active_avatar} -> web/avatar.vrm")
             except Exception as e:
                 print(f"❌ [AVATAR] Error copiando avatar: {e}")
         else:
@@ -113,7 +111,9 @@ class AvatarWindow(QWidget):
         layout.addWidget(self.webview)
         
         # Inyectar el nombre del avatar y hotkey después de cargar
-        self.webview.loadFinished.connect(lambda: self.webview.page().runJavaScript(f"window.setAvatarName('{self.avatar_name}'); window.setHotkey('{self.hotkey_display}');"))
+        # json.dumps produce un literal de string JS seguro (escapa comillas, backslashes, etc.)
+        self.webview.loadFinished.connect(lambda: self.webview.page().runJavaScript(
+            f"window.setAvatarName({json.dumps(self.avatar_name)}); window.setHotkey({json.dumps(self.hotkey_display)});"))
         
         # Verificar periódicamente si el sistema está listo
         self.check_ready_timer = QTimer()
@@ -131,17 +131,28 @@ class AvatarWindow(QWidget):
         self.webview.page().runJavaScript("window.hideRecordingUI();")
 
     def update_transcription(self, text):
-        texto_limpio = text.replace("'", "\\'").replace('\n', ' ')
-        self.webview.page().runJavaScript(f"window.updateTranscription('{texto_limpio}');")
+        self.webview.page().runJavaScript(f"window.updateTranscription({json.dumps(text)});")
 
     def update_live_transcription(self, text):
-        texto_limpio = text.replace("'", "\\'").replace('\n', ' ')
-        self.webview.page().runJavaScript(f"window.updateLiveTranscription('{texto_limpio}');")
+        self.webview.page().runJavaScript(f"window.updateLiveTranscription({json.dumps(text)});")
+
+    def transition_to_chat_mode(self, user_name, user_text):
+        self.webview.page().runJavaScript(
+            f"window.transitionToChatMode({json.dumps(user_name)}, {json.dumps(user_text)});")
+
+    def show_assistant_response(self, response, is_fallback=False):
+        self.webview.page().runJavaScript(
+            f"window.showAssistantResponse({json.dumps(response)}, {str(is_fallback).lower()});")
+
+    def hide_chat(self):
+        self.webview.page().runJavaScript("window.hideChat();")
+
+    def flash_error(self):
+        self.webview.page().runJavaScript("window.flashError();")
 
     def on_text_to_speak(self, text, duration):
         """Slot para recibir texto y duración del TTS y enviar al frontend (thread-safe)"""
-        texto_limpio = text.replace("'", "\\'").replace('\n', ' ')
-        self.webview.page().runJavaScript(f"window.startSpeaking('{texto_limpio}', {duration});")
+        self.webview.page().runJavaScript(f"window.startSpeaking({json.dumps(text)}, {duration});")
 
     def check_system_ready(self):
         """Verifica si el sistema está listo y emite la señal correspondiente"""

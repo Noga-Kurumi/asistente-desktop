@@ -1,0 +1,15 @@
+{
+    "username": "Usuario",
+    "api_key": "",
+    "active_avatar": "Lindsay.vrm",
+    "active_voice": "if_sara",
+    "launch_with_system": false,
+    "hotkey": "Key.f2",
+    "custom_instructions": "",
+    "audio_device": 1,
+    "whisper_model": "tiny",
+    "whisper_quantization": "none",
+    "gemini_model": "gemini-2.0-flash",
+    "avatar_name": "Lindsay",
+    "api_provider": "gemini"
+}
