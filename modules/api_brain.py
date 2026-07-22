@@ -157,6 +157,12 @@ class AssistantBrain(QObject):
         with self._generation_lock:
             return generation == self._generation
 
+    def cancel_current(self) -> None:
+        """Invalida la query en curso: sus emisiones se descartan (generación
+        obsoleta). Se llama cuando el usuario inicia una grabación nueva a
+        mitad de una respuesta (MVP: el turno viejo se abandona)."""
+        self._next_generation()
+
     def submit_query(self, user_prompt: str) -> None:
         """Encola una query en el QThreadPool global (sin hilos a mano).
 

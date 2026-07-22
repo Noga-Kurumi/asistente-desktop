@@ -260,6 +260,11 @@ class AvatarWindow(QWidget):
         self._run_js(
             f"window.showAssistantResponse({json.dumps(response)}, {str(is_fallback).lower()});")
 
+    def update_assistant_response(self, text):
+        """Actualización incremental del chat: reemplaza el contenido con el
+        texto completo acumulado hasta ahora (sin animaciones ni resets)."""
+        self._run_js(f"window.updateAssistantResponse({json.dumps(text)});")
+
     def hide_chat(self):
         self._run_js("window.hideChat();")
 

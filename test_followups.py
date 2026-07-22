@@ -60,8 +60,14 @@ textos = [win.combo_model.itemText(i) for i in range(win.combo_model.count())]
 print("   combo tras carga:", textos, "| seleccionado:", win.combo_model.currentText())
 assert win.combo_model.count() == 2
 assert win.combo_model.itemData(0) == "gemini-2.0-flash"
-# config.local.json tiene gemini-3.5-flash -> debe quedar seleccionado
-assert win.combo_model.currentData() == "gemini-3.5-flash", win.combo_model.currentData()
+# Si el gemini_model de la config esta en la lista debe quedar seleccionado;
+# si no, cae al primero.
+from modules.config_manager import get_config
+_cfg_model = get_config().get("gemini_model", "")
+_esperado = _cfg_model if _cfg_model in [m["name"] for m in MODELOS_FAKE] \
+    else MODELOS_FAKE[0]["name"]
+assert win.combo_model.currentData() == _esperado, \
+    f"esperado {_esperado}, salio {win.combo_model.currentData()}"
 
 # --- caso error: get_gemini_models revienta -> loguea y combo queda con fallback ---
 def fake_models_rota(api_key):

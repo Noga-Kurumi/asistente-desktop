@@ -94,9 +94,16 @@ class AssistantApp(QObject):
 
         # Estado del turno (antes flags nonlocal de run_app).
         self.last_transcribed_text: str | None = None
-        self.is_immediate_phrase = False
         self.chat_visible = False
         self.username = self.config.get("username", "") or "Usuario"
+
+        # Coordinación de fin de turno (anti-parpadeo): el avatar solo se
+        # esconde y el input solo se desbloquea cuando el LLM terminó Y la
+        # cola del TTS quedó drenada (señal queue_drained del worker, que es
+        # quien sabe la verdad del audio; las señales encoladas speech_*
+        # pueden llegar desfasadas y NO sirven para decidir el fin).
+        self._response_pending = False  # query LLM en curso
+        self._response_text = ""        # respuesta acumulada (chat incremental)
 
         self._last_audio = None          # audio del turno, para reintentar
         self._download_in_progress = False
@@ -195,10 +202,11 @@ class AssistantApp(QObject):
         self.api_brain.text_chunk_ready.connect(self.on_llm_text_ready)
         self.api_brain.point_action_ready.connect(self.on_point_action)
         self.api_brain.error_occurred.connect(self.on_error)
+        self.api_brain.thinking_finished.connect(self.on_thinking_finished)
 
         # TTS → main / avatar
         self.tts_core.speech_started.connect(self.on_speech_started)
-        self.tts_core.speech_ended.connect(self.on_speech_ended)
+        self.tts_core.queue_drained.connect(self.on_queue_drained)
         # text_to_speak emite (texto, duracion, timeline_visemas).
         self.tts_core.text_to_speak.connect(self.avatar.on_text_to_speak)
 
@@ -250,8 +258,10 @@ class AssistantApp(QObject):
     @_slot_guard
     def on_js_event(self, msg: str):
         if msg == "TTS_ENDED":
-            logger.info("🔓 [MAIN] TTS terminado (JS), desbloqueando input")
-            self.input_manager.set_locked(False)
+            # El JS terminó de animar el audio actual: cuenta para el fin de
+            # turno, pero NUNCA desbloquea ni esconde por sí solo.
+            logger.info("🎵 [MAIN] TTS terminado (JS)")
+            self._maybe_finish_turn()
 
     @_slot_guard
     def on_recording_started(self):
@@ -261,10 +271,16 @@ class AssistantApp(QObject):
 
         # Estado del turno nuevo.
         self.last_transcribed_text = None
-        self.is_immediate_phrase = False
         self.chat_visible = False
         self._last_audio = None
+        self._response_text = ""
+        self._response_pending = False
         self.hide_timer.stop()
+
+        # Cancelación MVP: si había una respuesta a medias (LLM streameando o
+        # audio en cola/sonando), se abandona — el turno viejo no sigue.
+        self.api_brain.cancel_current()
+        self.tts_core.clear_queue()
 
         # Captura de pantalla en el momento exacto de la grabación.
         self.api_brain.capture_and_store_screen()
@@ -323,6 +339,7 @@ class AssistantApp(QObject):
         logger.info("✅ [MAIN] Texto transcribido: '%s'", text)
         self.last_transcribed_text = text
         self._last_audio = None
+        self._response_text = ""
         self.avatar.update_transcription(text)
         self.sm.transition(State.THINKING)
         self._set_avatar_state("thinking")
@@ -333,9 +350,9 @@ class AssistantApp(QObject):
         if api_key and pool:
             frase = random.choice(pool)
             logger.info("🎵 [MAIN] Frase inmediata: '%s'", frase)
-            self.is_immediate_phrase = True
             self.tts_core.process_text_async(frase, self._voz_activa())
 
+        self._response_pending = True
         self.api_brain.submit_query(text)
 
     @_slot_guard
@@ -345,11 +362,16 @@ class AssistantApp(QObject):
 
         self.avatar.flash_error()
 
+        # El error cierra la respuesta (la frase de fallback sí pasa por TTS).
+        self._response_pending = False
+        self._response_text = ""
+
         # Bug corregido: aunque la transcripción no produjera texto
         # (last_transcribed_text es None), el error también se muestra en la UI.
         user_text = self.last_transcribed_text or "(sin transcripción de audio)"
-        self.chat_visible = True
-        self.avatar.transition_to_chat_mode(self.username, user_text)
+        if not self.chat_visible:
+            self.chat_visible = True
+            self.avatar.transition_to_chat_mode(self.username, user_text)
         self.avatar.show_assistant_response(msg, is_fallback=True)
 
         # ERROR es transitorio; desde IDLE (p.ej. ERR_MIC sin grabación) no hay
@@ -361,13 +383,16 @@ class AssistantApp(QObject):
 
     @_slot_guard
     def on_llm_text_ready(self, text: str):
-        # A partir de aquí lo que suena es la respuesta real, no frase inmediata.
-        self.is_immediate_phrase = False
+        # Chat incremental: acumular la respuesta y actualizar el HTML con el
+        # texto COMPLETO recibido hasta ahora (como un chatbot), sin sobreescribir
+        # por oración ni reiniciar la animación de transición.
+        self._response_text = (self._response_text + " " + text).strip()
 
-        user_text = self.last_transcribed_text or "(sin transcripción de audio)"
-        self.chat_visible = True
-        self.avatar.transition_to_chat_mode(self.username, user_text)
-        self.avatar.show_assistant_response(text)
+        if not self.chat_visible:
+            user_text = self.last_transcribed_text or "(sin transcripción de audio)"
+            self.chat_visible = True
+            self.avatar.transition_to_chat_mode(self.username, user_text)
+        self.avatar.update_assistant_response(self._response_text)
 
         self.tts_core.process_text_async(text, self._voz_activa())
 
@@ -382,18 +407,38 @@ class AssistantApp(QObject):
         self._set_avatar_state("speaking")
 
     @_slot_guard
-    def on_speech_ended(self):
-        self._set_avatar_state("idle")
+    def on_queue_drained(self):
+        # El worker terminó de sonar TODO lo encolado: es la única señal
+        # confiable de fin de audio (speech_ended puede llegar desfasada).
+        self._maybe_finish_turn()
 
-        if self.is_immediate_phrase:
-            # Era la frase de cortesía: seguimos esperando la respuesta real.
-            logger.info("⏭️ [MAIN] Frase inmediata terminada, esperando al modelo")
-            self.is_immediate_phrase = False
+    @_slot_guard
+    def on_thinking_finished(self):
+        # El LLM terminó (éxito o error): ya no llegan más oraciones del turno.
+        self._response_pending = False
+        self._maybe_finish_turn()
+
+    def _maybe_finish_turn(self) -> None:
+        """Cierra el turno SOLO cuando terminó todo de verdad.
+
+        Condiciones: el LLM terminó (sin query en curso) y la cola del TTS
+        está vacía. Se dispara desde thinking_finished y queue_drained; el
+        que llega primero encuentra la otra condición sin cumplir y no hace
+        nada. Al cerrar: SPEAKING/THINKING/ERROR → IDLE, desbloquear input y
+        programar el ocultamiento UNA sola vez (las llamadas posteriores caen
+        en el guard del estado).
+        """
+        if self._response_pending:
+            return
+        if self.sm.state not in (State.SPEAKING, State.THINKING, State.ERROR):
+            return
+        if self.tts_core.pending_count > 0:
             return
 
+        logger.info("✅ [MAIN] Turno completo: respuesta y audio terminados")
+        self._set_avatar_state("idle")
         self.input_manager.set_locked(False)
-        if self.sm.state in (State.SPEAKING, State.ERROR):
-            self.sm.transition(State.IDLE)
+        self.sm.transition(State.IDLE)
         self._schedule_hide_timer()
 
     # -------------------------------------------------------- descarga modelos

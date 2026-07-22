@@ -89,6 +89,7 @@ class StubBrain(QObject):
     text_chunk_ready = Signal(str)
     point_action_ready = Signal(int, int)
     error_occurred = Signal(str)
+    thinking_finished = Signal()
 
     def capture_and_store_screen(self):
         pass
@@ -100,6 +101,7 @@ class StubBrain(QObject):
 class StubTTS(QObject):
     speech_started = Signal()
     speech_ended = Signal()
+    queue_drained = Signal()
     text_to_speak = Signal(str, float, list)
 
     model_path = "kokoro-v1.0.onnx"

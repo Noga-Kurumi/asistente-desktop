@@ -324,6 +324,20 @@
             }
         };
 
+        window.updateAssistantResponse = (text) => {
+            // Chat incremental: Python manda el texto COMPLETO acumulado en
+            // cada chunk del stream; acá solo se reemplaza el contenido, sin
+            // animaciones ni resets (efecto chatbot escribiendo en vivo).
+            const assistantTextEl = document.getElementById('assistant-text');
+            if (assistantTextEl) {
+                assistantTextEl.innerHTML = text;
+                // Mantener el scroll abajo si la respuesta es larga
+                assistantTextEl.scrollTop = assistantTextEl.scrollHeight;
+            } else {
+                console.error("🎭 [WEB] ERROR: Elemento assistant-text no encontrado");
+            }
+        };
+
         window.hideChat = () => {
             console.log("🎭 [WEB] hideChat llamado - ocultando caja de chat con animación");
             const transBox = document.getElementById('transcription-box');
