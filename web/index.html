@@ -93,9 +93,9 @@
     <script type="importmap">
         {
             "imports": {
-                "three": "https://unpkg.com/three@0.155.0/build/three.module.js",
-                "three/addons/": "https://unpkg.com/three@0.155.0/examples/jsm/",
-                "@pixiv/three-vrm": "https://unpkg.com/@pixiv/three-vrm@2.0.0/lib/three-vrm.module.js"
+                "three": "./vendor/three.module.js",
+                "three/addons/": "./vendor/",
+                "@pixiv/three-vrm": "./vendor/three-vrm.module.js"
             }
         }
     </script>
@@ -105,6 +105,49 @@
         let boxTimeout = null; // Guardamos el timer de la caja aquí
         console.log("🎭 [WEB] Sistema de avatar inicializado, estado:", window.avatarState);
         
+        window.resetToTranscriptionMode = () => {
+            // Resetea el estado de la caja de chat a modo transcripción con animación.
+            // Llamado desde Python al iniciar una nueva grabación estando en modo chat.
+            const chatContent = document.getElementById('chat-content');
+            const transStatus = document.getElementById('transcription-status');
+            const transText = document.getElementById('transcription-text');
+            const volumeMeter = document.getElementById('volume-meter');
+            const transBox = document.getElementById('transcription-box');
+
+            // Resetear clases de fade
+            chatContent.classList.remove('fade-in', 'fade-out');
+            transStatus.classList.remove('fade-in', 'fade-out');
+            transText.classList.remove('fade-in', 'fade-out');
+            volumeMeter.classList.remove('fade-in', 'fade-out');
+
+            // Ocultar chat inmediatamente
+            chatContent.style.display = 'none';
+
+            // Mostrar elementos de transcripción
+            transStatus.style.display = 'inline';
+            transText.style.display = 'block';
+            volumeMeter.style.display = 'block';
+
+            // Resetear estilos de la caja por si estaba oculta
+            transBox.style.visibility = 'visible';
+            transBox.style.opacity = '1';
+            transBox.classList.remove('hiding');
+
+            // Forzar reflow para asegurar que los cambios de display se apliquen
+            void transStatus.offsetWidth;
+
+            // Aplicar fade in a los elementos de transcripción
+            transStatus.style.opacity = '0';
+            transText.style.opacity = '0';
+            volumeMeter.style.opacity = '0';
+
+            setTimeout(() => {
+                transStatus.style.opacity = '1';
+                transText.style.opacity = '1';
+                volumeMeter.style.opacity = '1';
+            }, 50);
+        };
+
         window.toggleRecordingUI = (isRecording) => {
             console.log("🎭 [WEB] toggleRecordingUI llamado con:", isRecording);
             const transBox = document.getElementById('transcription-box');

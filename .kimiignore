@@ -1,8 +1,25 @@
+# Entornos y temporales de Python
 .git/
-bin/
-obj/
-build/
-dist/
-node_modules/
-*.dll
+.venv/
+__pycache__/
+temp/
+
+# Modelos pesados de IA y pesos (ONNX, Binarios)
+models/
+*.onnx
+*.bin
+
+# Binarios y carpetas de C++ (Whisper)
+whisper_cpp/
+whisper_cpp_source/
+whisper_cpp_stream_pcm/
 *.exe
+*.dll
+*.so
+*.pyd
+*.pyc
+
+# Multimedia si no querés que las lea
+avatars/
+*.wav
+*.mp3
