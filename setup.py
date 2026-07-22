@@ -1,33 +1,32 @@
+import logging
 import os
 import sys
-import json
 import re
 import numpy as np
 import sounddevice as sd
 from pynput import keyboard
-from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
-                                QLabel, QLineEdit, QTextEdit, QCheckBox, QPushButton, 
+from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
+                                QLabel, QLineEdit, QTextEdit, QCheckBox, QPushButton,
                                 QComboBox, QMessageBox, QProgressBar)
-from PySide6.QtCore import Qt, QObject, Signal, QTimer
+from PySide6.QtCore import Qt, QObject, Signal, QTimer, QRunnable, QThreadPool
 from PySide6.QtGui import QIcon
 
+# Configuración única vía config_manager (api_key se persiste en config.local.json)
+from modules.config_manager import get_config, CONFIG_FILE
 # Importar función para obtener voces disponibles
 from modules.tts_core import get_available_voices
-from modules.api_brain import AssistantBrain
+# Validación de la API key contra la API de Gemini
+from modules.llm import get_gemini_models
 
-# Usar ruta absoluta para config.json
-CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
+logger = logging.getLogger(__name__)
 
-# Regex para detectar proveedores de API
-REGEX_ANTHROPIC = r"^sk-ant-(?:api\d{2}|oat\d{2}|[A-Za-z0-9_-]+)-[A-Za-z0-9_-]{40,}$"
+# Regex para validar la clave de API (solo Gemini; Anthropic ya no se soporta)
 REGEX_GEMINI = r"^(?:AIzaSy[A-Za-z0-9_-]{33}|AQ\.[A-Za-z0-9_-]+)$"
 
 def detect_provider(api_key):
-    """Detecta el proveedor de API basado en el formato de la clave."""
+    """Detecta el proveedor de API basado en el formato de la clave (solo Gemini)."""
     if not api_key or not api_key.strip():
         return None
-    if re.match(REGEX_ANTHROPIC, api_key.strip()):
-        return "anthropic"
     if re.match(REGEX_GEMINI, api_key.strip()):
         return "gemini"
     return None
@@ -53,6 +52,27 @@ class KeyCatcher(QObject):
         self.key_caught.emit(key_val)
         return False
 
+class _GeminiModelsSignals(QObject):
+    """Puente para que el worker avise al hilo de la UI."""
+
+    finished = Signal(list, str)  # (modelos Gemini, api_key con la que se pidió)
+
+class _GeminiModelsWorker(QRunnable):
+    """Llama a get_gemini_models (red, bloqueante) en el QThreadPool global."""
+
+    def __init__(self, api_key: str, signals: _GeminiModelsSignals):
+        super().__init__()
+        self._api_key = api_key
+        self._signals = signals
+
+    def run(self) -> None:
+        try:
+            models = get_gemini_models(self._api_key)
+        except Exception as e:
+            logger.error("❌ [SETUP] Error obteniendo modelos Gemini: %s", e, exc_info=True)
+            models = []
+        self._signals.finished.emit(models, self._api_key)
+
 class SetupWindow(QWidget):
     def __init__(self, from_system_tray=False):
         super().__init__()
@@ -64,12 +84,20 @@ class SetupWindow(QWidget):
             self.setWindowIcon(QIcon(icon_path))
         
         self.resize(400, 520)
-        self.config_data = self.load_config()
+        # Única fuente de verdad de configuración (cascada DEFAULTS ←
+        # config.json ← config.local.json).
+        self.config = get_config()
+        self.config_data = self.config.as_dict()
         self.is_first_run = not os.path.exists(CONFIG_FILE)
         self.from_system_tray = from_system_tray  # True si se abrió desde system tray, False si fue por falta de datos
         
         self.catcher = KeyCatcher()
         self.catcher.key_caught.connect(self.on_hotkey_caught)
+
+        # Los modelos Gemini se piden por red en segundo plano (la ventana
+        # abre al instante; el combo se puebla cuando llega la respuesta).
+        self._models_signals = _GeminiModelsSignals(self)
+        self._models_signals.finished.connect(self.on_gemini_models_ready)
         
         # Cargar icono para los popups
         self.app_icon = None
@@ -89,30 +117,6 @@ class SetupWindow(QWidget):
         """Limpiar recursos al cerrar la ventana"""
         self.stop_mic_test()
         event.accept()
-
-    def load_config(self):
-        default_config = {
-            "username": "Noga", 
-            "api_key": "", 
-            "active_avatar": "", 
-            "active_voice": "", 
-            "launch_with_system": False,
-            "hotkey": "Key.alt_r",
-            "custom_instructions": "",
-            "audio_device": None,
-            "whisper_model": "tiny",
-            "whisper_quantization": "none",
-            "gemini_model": ""
-        }
-        if os.path.exists(CONFIG_FILE):
-            try:
-                with open(CONFIG_FILE, 'r') as f:
-                    data = json.load(f)
-                    default_config.update(data)
-                    return default_config
-            except Exception:
-                pass
-        return default_config
 
     def init_ui(self):
         layout = QVBoxLayout()
@@ -161,7 +165,7 @@ class SetupWindow(QWidget):
         self.populate_combo(self.combo_avatar, "avatars", ".vrm", self.config_data.get("active_avatar", ""))
         layout.addWidget(self.combo_avatar)
 
-        layout.addWidget(QLabel("Voz Kokoro (desde voices.json):"))
+        layout.addWidget(QLabel("Voz Kokoro:"))
         self.combo_voice = QComboBox()
         self.populate_voices_combo(self.combo_voice, self.config_data.get("active_voice", ""))
         layout.addWidget(self.combo_voice)
@@ -237,82 +241,77 @@ class SetupWindow(QWidget):
 
     def populate_voices_combo(self, combo, current_val):
         """Poblar el combo con voces dinámicas desde voices-v1.0.bin"""
+        # Voces españolas por defecto (también fallback si no se pueden leer las voces)
+        SPANISH_VOICES = [
+            ("ef_dora", "ef_dora - Español"),
+            ("em_alex", "em_alex - Español"),
+            ("em_santa", "em_santa - Español"),
+        ]
+
         # Obtener voces disponibles del archivo binario
         voices = get_available_voices()
-        
+
         if not voices:
-            # Fallback si no se pueden cargar las voces
-            combo.addItem("Error cargando voces")
-            return
-        
-        # Si está vacío o hay basura vieja, forzamos un default (af_bella - Inglés US)
+            # Fallback: ofrecer las voces españolas por defecto
+            logger.warning("⚠️ [SETUP] No se pudieron cargar las voces; usando defaults españoles")
+            voices = SPANISH_VOICES
+
+        # Si está vacío o hay basura vieja, forzamos un default español (ef_dora)
         if not current_val or current_val not in [v[0] for v in voices]:
-            current_val = "af_bella"
-        
+            current_val = "ef_dora"
+
         # Agregar voces al combo con formato "nombre - idioma"
         for voice_id, voice_name in voices:
             combo.addItem(voice_name, voice_id)  # voice_name como texto, voice_id como userData
-        
+
         # Seleccionar la voz actual por userData
         index = combo.findData(current_val)
         if index >= 0:
             combo.setCurrentIndex(index)
-        else:
-            # Fallback a af_bella si no se encuentra
-            index = combo.findData("af_bella")
-            if index >= 0:
-                combo.setCurrentIndex(index)
 
     def populate_gemini_models(self):
-        """Poblar el combo con modelos Gemini disponibles"""
-        try:
-            print(f"🔍 [SETUP] Iniciando populate_gemini_models")
-            
-            # Verificar si hay API key de Gemini
-            api_key = self.config_data.get("api_key", "")
-            print(f"🔍 [SETUP] API key presente: {bool(api_key)}")
-            
-            if not api_key:
-                self.combo_model.addItem("Configura API key primero", "")
-                return
-            
-            # Verificar si el proveedor es Gemini
-            provider = detect_provider(api_key)
-            print(f"🔍 [SETUP] Proveedor detectado: {provider}")
-            
-            if provider != "gemini":
-                self.combo_model.addItem("Solo disponible con Gemini", "")
-                return
-            
-            # Llamar directamente al método estático con la API key
-            print(f"🔍 [SETUP] Llamando a get_gemini_models con API key")
-            brain = AssistantBrain()
-            models = brain.get_gemini_models(api_key=api_key)
-            print(f"🔍 [SETUP] Modelos obtenidos: {len(models)}")
-            
-            if not models:
-                self.combo_model.addItem("No se encontraron modelos", "")
-                return
-            
-            # Agregar modelos al combo con display_name
-            for model in models:
-                self.combo_model.addItem(model['display_name'], model['name'])
-            
-            # Seleccionar modelo actual
-            current_model = self.config_data.get("gemini_model", "")
-            if current_model:
-                index = self.combo_model.findData(current_model)
-                if index >= 0:
-                    self.combo_model.setCurrentIndex(index)
-            elif self.combo_model.count() > 0:
-                # Seleccionar el primero por defecto
-                self.combo_model.setCurrentIndex(0)
-                
-        except Exception as e:
-            print(f"❌ [SETUP] Error en populate_gemini_models: {e}")
-            import traceback
-            traceback.print_exc()
-            self.combo_model.addItem("Error cargando modelos", "")
+        """Dispara la carga de modelos Gemini en segundo plano (valida la API key)."""
+        api_key = self.input_api.text().strip()
+        if not api_key:
+            self.combo_model.addItem("Configura API key primero", "")
+            return
+
+        if detect_provider(api_key) != "gemini":
+            self.combo_model.addItem("Clave inválida (solo Gemini)", "")
+            return
+
+        # La ventana no se bloquea: los modelos llegan a on_gemini_models_ready.
+        self.combo_model.addItem("Cargando modelos...", "")
+        worker = _GeminiModelsWorker(api_key, self._models_signals)
+        QThreadPool.globalInstance().start(worker)
+
+    def on_gemini_models_ready(self, models, api_key):
+        """Recibe los modelos Gemini del worker y puebla el combo."""
+        if api_key != self.input_api.text().strip():
+            # Respuesta tardía de una clave que ya no está en el campo: ignorar.
+            logger.info("⏳ [SETUP] Modelos descartados: la API key cambió durante la carga")
+            return
+
+        self.combo_model.clear()
+        if not models:
+            self.combo_model.addItem("No se encontraron modelos", "")
+            return
+
+        logger.info("🔍 [SETUP] Modelos Gemini obtenidos: %d", len(models))
+
+        # Agregar modelos al combo con display_name
+        for model in models:
+            self.combo_model.addItem(model['display_name'], model['name'])
+
+        # Seleccionar modelo actual
+        current_model = self.config_data.get("gemini_model", "")
+        if current_model:
+            index = self.combo_model.findData(current_model)
+            if index >= 0:
+                self.combo_model.setCurrentIndex(index)
+        elif self.combo_model.count() > 0:
+            # Seleccionar el primero por defecto
+            self.combo_model.setCurrentIndex(0)
 
     def populate_audio_devices(self):
         """Poblar el combo con dispositivos de audio de entrada"""
@@ -376,7 +375,7 @@ class SetupWindow(QWidget):
     def audio_callback(self, indata, frames, time_info, status):
         """Callback para capturar audio del micrófono"""
         if status:
-            print(f"Audio callback status: {status}")
+            logger.debug("[SETUP] Audio callback status: %s", status)
         
         # Calcular nivel de volumen (RMS)
         rms = np.sqrt(np.mean(indata ** 2))
@@ -404,27 +403,21 @@ class SetupWindow(QWidget):
         self.btn_hotkey.setStyleSheet("")
 
     def on_api_key_changed(self, text):
-        """Detecta el proveedor de API y actualiza el label."""
+        """Valida la clave de API (solo Gemini) y actualiza el label."""
         provider = detect_provider(text)
-        if provider == "anthropic":
-            self.label_provider.setText("✓ Anthropic detectado")
-            self.label_provider.setStyleSheet("color: #4CAF50; font-size: 11px; font-weight: bold;")
-            self.combo_model.clear()
-            self.combo_model.addItem("Anthropic usa modelo fijo", "")
-        elif provider == "gemini":
+        self.combo_model.clear()
+        if provider == "gemini":
             self.label_provider.setText("✓ Gemini detectado")
             self.label_provider.setStyleSheet("color: #4CAF50; font-size: 11px; font-weight: bold;")
             # Poblar modelos de Gemini
             self.populate_gemini_models()
         elif text.strip():
-            self.label_provider.setText("✗ Clave inválida")
+            self.label_provider.setText("✗ Clave inválida (solo Gemini)")
             self.label_provider.setStyleSheet("color: #F44336; font-size: 11px;")
-            self.combo_model.clear()
             self.combo_model.addItem("Clave inválida", "")
         else:
             self.label_provider.setText("No hay clave")
             self.label_provider.setStyleSheet("color: #888; font-size: 11px;")
-            self.combo_model.clear()
             self.combo_model.addItem("Configura API key primero", "")
 
     def save_config(self):
@@ -433,14 +426,17 @@ class SetupWindow(QWidget):
             self.stop_mic_test()
         
         # Guardar configuración anterior para detectar cambios
-        old_config = self.config_data.copy() if os.path.exists(CONFIG_FILE) else {}
-        
-        self.config_data["username"] = self.input_user.text()
-        self.config_data["avatar_name"] = self.input_avatar_name.text()
-        self.config_data["api_key"] = self.input_api.text()
-        self.config_data["api_provider"] = detect_provider(self.input_api.text()) or ""
-        self.config_data["custom_instructions"] = self.input_custom.toPlainText().strip()
-        
+        old_config = dict(self.config_data)
+
+        new_values = {
+            "username": self.input_user.text(),
+            "avatar_name": self.input_avatar_name.text(),
+            # api_key se persiste solo en config.local.json (lo reparte config.save())
+            "api_key": self.input_api.text().strip(),
+            "api_provider": detect_provider(self.input_api.text()) or "",
+            "custom_instructions": self.input_custom.toPlainText().strip(),
+        }
+
         avatar_val = self.combo_avatar.currentText()
         if avatar_val == "Ninguno seleccionado":
             msg = QMessageBox(self)
@@ -451,35 +447,47 @@ class SetupWindow(QWidget):
                 msg.setWindowIcon(self.app_icon)
             msg.exec()
             return
-        self.config_data["active_avatar"] = avatar_val
-        
+        new_values["active_avatar"] = avatar_val
+
         voice_val = self.combo_voice.currentData()  # Obtener el ID de la voz (userData)
         if voice_val is None:
             voice_val = self.combo_voice.currentText()
-        self.config_data["active_voice"] = voice_val if voice_val and voice_val != "Error cargando voces" else ""
-        
+        new_values["active_voice"] = voice_val or ""
+
         # Guardar dispositivo de audio
-        audio_device = self.combo_audio.currentData()
-        self.config_data["audio_device"] = audio_device
-        
+        new_values["audio_device"] = self.combo_audio.currentData()
+
         # Guardar configuración de whisper
-        self.config_data["whisper_model"] = self.combo_whisper_model.currentData()
-        self.config_data["whisper_quantization"] = self.combo_whisper_quant.currentData()
-        
+        new_values["whisper_model"] = self.combo_whisper_model.currentData()
+        new_values["whisper_quantization"] = self.combo_whisper_quant.currentData()
+
         # Guardar modelo seleccionado
         selected_model = self.combo_model.currentData()
-        if selected_model and selected_model not in ["", "Configura API key primero", "Anthropic usa modelo fijo", "Solo disponible con Gemini", "No se encontraron modelos", "Error cargando modelos", "Clave inválida"]:
-            self.config_data["gemini_model"] = selected_model
+        if selected_model and selected_model not in ["", "Configura API key primero", "Clave inválida (solo Gemini)", "No se encontraron modelos", "Error cargando modelos", "Clave inválida"]:
+            new_values["gemini_model"] = selected_model
         else:
             # Limpiar el modelo si no es válido
-            self.config_data["gemini_model"] = ""
-        
-        self.config_data["launch_with_system"] = self.check_startup.isChecked()
+            new_values["gemini_model"] = ""
 
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(self.config_data, f, indent=4)
+        new_values["launch_with_system"] = self.check_startup.isChecked()
 
-        self.handle_startup_os(self.config_data["launch_with_system"])
+        # Persistir vía config_manager (escritura atómica; api_key → config.local.json)
+        self.config_data.update(new_values)
+        try:
+            self.config.update(new_values)
+            self.config.save()
+        except (TypeError, OSError) as e:
+            logger.error("❌ [SETUP] No se pudo guardar la configuración: %s", e, exc_info=True)
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Error")
+            msg.setText(f"No se pudo guardar la configuración: {e}")
+            msg.setIcon(QMessageBox.Icon.Critical)
+            if self.app_icon:
+                msg.setWindowIcon(self.app_icon)
+            msg.exec()
+            return
+
+        self.handle_startup_os(new_values["launch_with_system"])
 
         # Detectar si hubo cambios
         config_changed = old_config != self.config_data

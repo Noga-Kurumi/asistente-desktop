@@ -100,7 +100,28 @@
         }
     </script>
 
+    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
     <script>
+        // Cliente QWebChannel: eventos JS → Python. Fallback a console.log si
+        // el canal no existe (p.ej. abriendo la página fuera de QWebEngine).
+        window.bridge = null;
+        window.sendEvent = (payload) => {
+            const msg = JSON.stringify(payload);
+            if (window.bridge) {
+                window.bridge.jsEvent(msg);
+            } else {
+                console.log("🎭 [WEB][EVENT]", msg);
+            }
+        };
+        if (typeof qt !== "undefined" && typeof QWebChannel !== "undefined") {
+            new QWebChannel(qt.webChannelTransport, (channel) => {
+                window.bridge = channel.objects.bridge;
+                console.log("🎭 [WEB] QWebChannel conectado con Python");
+            });
+        } else {
+            console.warn("🎭 [WEB] QWebChannel no disponible, se usa fallback console.log");
+        }
+
         window.avatarState = "hidden";
         let boxTimeout = null; // Guardamos el timer de la caja aquí
         console.log("🎭 [WEB] Sistema de avatar inicializado, estado:", window.avatarState);
@@ -331,12 +352,8 @@
             }
         };
 
-        window.apuntarFalso = () => {
-            console.log("🎭 [WEB] apuntarFalso llamado");
-        };
-        window.setAvatarPath = (path) => {
-            console.log("🎭 [WEB] setAvatarPath llamado con:", path);
-            window.avatarPath = path;
+        window.apuntarFalso = (x, y) => {
+            console.log("🎭 [WEB] apuntarFalso llamado con:", x, y);
         };
         window.setAvatarName = (name) => {
             console.log("🎭 [WEB] setAvatarName llamado con:", name);
@@ -354,22 +371,33 @@
                 hotkeyEl.textContent = hotkey;
             }
         };
-        window.startSpeaking = (text, duration) => {
-            console.log("🎭 [WEB] startSpeaking llamado con:", text, "duración:", duration);
-            window.speakingText = text;
-            window.speakingStartTime = Date.now();
-            window.speakingDuration = duration * 1000; // Convertir a milisegundos
-            window.charDuration = window.speakingDuration / text.length; // ms por carácter
+        // Timeline de visemas calculada en Python del PCM real del TTS.
+        // Cada frame: {"t": segundos desde el inicio, "viseme": "sil"|"aa"|"e"|"ih"|"oh"|"ou", "weight": 0..1}
+        window.visemeTimeline = null;
+        window.visemeIndex = 0;
+        window.ttsEndedSent = false;
+        window.setVisemeTimeline = (timeline) => {
+            // Acepta array (literal JS) o string JSON
+            if (typeof timeline === 'string') {
+                try {
+                    timeline = JSON.parse(timeline);
+                } catch (e) {
+                    console.error("🎭 [WEB] setVisemeTimeline: JSON inválido", e);
+                    window.visemeTimeline = null;
+                    return;
+                }
+            }
+            window.visemeTimeline = Array.isArray(timeline) ? timeline : null;
+            console.log("🎭 [WEB] Timeline de visemas recibida:",
+                window.visemeTimeline ? window.visemeTimeline.length : 0, "frames");
         };
-        window.getVisemeForChar = (char) => {
-            const vowelBlendshapes = {
-                'a': 'aa', 'á': 'aa', 'à': 'aa', 'ä': 'aa',
-                'e': 'e', 'é': 'e', 'è': 'e', 'ë': 'e',
-                'i': 'ih', 'í': 'ih', 'ì': 'ih', 'ï': 'ih',
-                'o': 'oh', 'ó': 'oh', 'ò': 'oh', 'ö': 'oh',
-                'u': 'ou', 'ú': 'ou', 'ù': 'ou', 'ü': 'ou',
-            };
-            return vowelBlendshapes[char.toLowerCase()] || null; // Consonantes = null (cerrar boca)
+        window.startSpeaking = (text, duration) => {
+            console.log("🎭 [WEB] startSpeaking llamado, duración:", duration);
+            // Reloj de reproducción del lip sync (performance.now, monótono)
+            window.speakingStartTime = performance.now();
+            window.speakingDuration = duration * 1000; // Convertir a milisegundos
+            window.visemeIndex = 0;
+            window.ttsEndedSent = false;
         };
         window.hideReadyNotification = () => {
             const notif = document.getElementById('ready-notification');
@@ -461,11 +489,16 @@
         const loader = new GLTFLoader();
         loader.register((parser) => new VRMLoaderPlugin(parser));
         
-        // Usar el path del avatar configurado o fallback a avatar.vrm
-        const avatarPath = window.avatarPath || './avatar.vrm';
+        // El nombre del avatar llega por query string (?avatar=) desde Python y
+        // se sirve directo del directorio avatars/ del proyecto (sin copia en web/).
+        const avatarFile = new URLSearchParams(window.location.search).get('avatar');
+        const avatarPath = avatarFile ? '/avatars/' + encodeURIComponent(avatarFile) : null;
+        if (!avatarPath) {
+            console.error("🎭 [WEB] ERROR: falta el parámetro ?avatar= en la URL");
+        }
         console.log("🎭 [WEB] Loader configurado, cargando avatar:", avatarPath);
-        
-        loader.load(avatarPath, (gltf) => {
+
+        if (avatarPath) loader.load(avatarPath, (gltf) => {
             console.log("🎭 [WEB] Avatar VRM cargado exitosamente");
             currentVrm = gltf.userData.vrm;
             scene.add(currentVrm.scene);
@@ -484,8 +517,8 @@
                 }, 5000);
             }
             
-            // Notificar a Python que el sistema está listo
-            window.systemReady = true;
+            // Notificar a Python que el sistema está listo (vía QWebChannel)
+            window.sendEvent({ type: "ready" });
             
             const rotY = 2.80;
             const offsetY = 1.15;
@@ -724,47 +757,44 @@
                 currentVrm.update(delta);
 
                 if (window.avatarState === "speaking") {
-                    // Usar visemes basados en texto si está disponible
-                    if (window.speakingText && window.speakingText.length > 0 && window.charDuration) {
-                        const elapsed = Date.now() - window.speakingStartTime;
-                        // Usar duración calculada dinámicamente
-                        const newCharIndex = Math.floor(elapsed / window.charDuration);
-                        
-                        if (newCharIndex < window.speakingText.length) {
-                            const char = window.speakingText[newCharIndex];
-                            const blendshape = window.getVisemeForChar(char);
-                            
-                            // Lista de blendshapes vocales VRM
-                            const vowelBlendshapes = ['aa', 'ih', 'ou', 'e', 'oh'];
-                            
-                            if (blendshape) {
-                                // Activar el blendshape correspondiente
-                                let currentValue = currentVrm.expressionManager.getValue(blendshape) || 0;
-                                currentVrm.expressionManager.setValue(blendshape, currentValue + (1.0 - currentValue) * 15 * delta);
-                                
-                                // Desactivar otros blendshapes vocales
-                                for (const bs of vowelBlendshapes) {
-                                    if (bs !== blendshape) {
-                                        let otherValue = currentVrm.expressionManager.getValue(bs) || 0;
-                                        currentVrm.expressionManager.setValue(bs, otherValue * (1 - 15 * delta));
-                                    }
-                                }
-                            } else {
-                                // Consonante: desactivar todos los blendshapes vocales
-                                for (const bs of vowelBlendshapes) {
-                                    let value = currentVrm.expressionManager.getValue(bs) || 0;
-                                    currentVrm.expressionManager.setValue(bs, value * (1 - 15 * delta));
-                                }
-                            }
-                        } else {
-                            // Se acabó el texto, cerrar boca
-                            const vowelBlendshapes = ['aa', 'ih', 'ou', 'e', 'oh'];
-                            for (const bs of vowelBlendshapes) {
-                                currentVrm.expressionManager.setValue(bs, 0);
-                            }
+                    // Blendshapes vocales VRM
+                    const vowelBlendshapes = ['aa', 'ih', 'ou', 'e', 'oh'];
+                    const timeline = window.visemeTimeline;
+
+                    if (timeline && timeline.length > 0 && window.speakingStartTime) {
+                        // Lip sync por timeline de visemas (calculada del PCM real)
+                        const elapsed = (performance.now() - window.speakingStartTime) / 1000;
+
+                        // Avanzar el puntero al frame vigente (timeline ordenada por t)
+                        while (window.visemeIndex < timeline.length - 1 &&
+                               timeline[window.visemeIndex + 1].t <= elapsed) {
+                            window.visemeIndex++;
+                        }
+
+                        const lastFrame = timeline[timeline.length - 1];
+                        const finished = elapsed > lastFrame.t + 0.05;
+                        const frame = (!finished && timeline[window.visemeIndex].t <= elapsed)
+                            ? timeline[window.visemeIndex]
+                            : null;
+                        const activeViseme = (frame && frame.viseme !== 'sil') ? frame.viseme : null;
+                        const activeWeight = frame ? frame.weight : 0;
+
+                        // Lerp del weight (~50 ms) para suavizar entre visemas
+                        const k = Math.min(1, delta / 0.05);
+                        for (const bs of vowelBlendshapes) {
+                            const goal = (bs === activeViseme) ? activeWeight : 0;
+                            const cur = currentVrm.expressionManager.getValue(bs) || 0;
+                            currentVrm.expressionManager.setValue(bs, cur + (goal - cur) * k);
+                        }
+
+                        // Al terminar la timeline la boca cae a 'sil' y se avisa
+                        // a Python una sola vez
+                        if (finished && !window.ttsEndedSent) {
+                            window.ttsEndedSent = true;
+                            window.sendEvent({ type: "tts_ended" });
                         }
                     } else {
-                        // Fallback a animación sinusoidal
+                        // Fallback a animación sinusoidal si no hay timeline
                         let timeNow = Date.now() * 0.015;
                         let mouthOpen = (Math.sin(timeNow) * 0.5 + 0.5) * 0.8;
                         let currentMouth = currentVrm.expressionManager.getValue('aa') || 0;
@@ -807,8 +837,9 @@
             }
         };
 
-        window.apuntarFalso = () => {
+        window.apuntarFalso = (x, y) => {
             if(!currentVrm) return;
+            console.log("🎭 [WEB] Apuntando a:", x, y);
             const rightArm = currentVrm.humanoid.getNormalizedBoneNode('rightUpperArm');
             if(rightArm) {
                 rightArm.rotation.z = -Math.PI / 2.5; 

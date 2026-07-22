@@ -80,6 +80,18 @@
                 "Me tiraron un 429 de pobreza. Recargá la cuenta de la API, dale.",
                 "Sin tokens no hay paraíso. La API dice que fundimos biela."
             ],
+            "ERR_UNAVAILABLE": [
+                "El modelo de la API está recontra saturado ahora. Probá de nuevo en unos segundos.",
+                "Me tiró un 503 de colapso. El server está hasta las manos, dale unos segundos y reintentá.",
+                "Alta demanda tiene el modelo ahora, no me da bola. Volvé a intentar en un cachito.",
+                "El cerebro central está sobrecargado, rey. Bancá unos segundos y tirame la consulta de nuevo.",
+                "503 del lado del server: mucha gente usando el modelo. En unos segundos se libera, probá ahí.",
+                "No me atiende el modelo por saturación. Fijate en unos segundos, dale.",
+                "Se congestionó la API. No es tu culpa ni la mía: probá de nuevo en un toque.",
+                "El modelo está más ocupado que mesa de café un lunes. Reintentá en unos segundos.",
+                "Me rebotó por alta demanda. Esperá unos segundos y hablame de nuevo, pa.",
+                "Server saturado, me dijo que vuelva más tarde. Unos segundos y le entramos de nuevo."
+            ],
             "ERR_AUTH": [
                 "Tiró error de autenticación. Fijate si la API Key está bien puesta.",
                 "Esa API Key no la agarra ni a palos. Le pifiaste a algún caracter fijo.",
