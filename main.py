@@ -132,7 +132,39 @@ class AssistantApp(QObject):
         self.audio_core.notify_model_missing()
         self._check_tts_models()
 
+        # Contexto en timeline (recolectores pasivos, fases A/B). Es un extra:
+        # import perezoso y errores atrapados para que nunca tumbe la app.
+        self.context_collector = None
+        if self.config.get("timeline_enabled", True):
+            try:
+                from modules.collectors import ContextCollector
+
+                self.context_collector = ContextCollector()
+                self.context_collector.start()
+                app.aboutToQuit.connect(self._stop_context_collector)
+                # PTT durante meetings: mientras el asistente graba, el mic del
+                # recolector se pausa (recording_stopped cubre soltar la hotkey
+                # tanto si hay audio válido como si se cancela; ESC emite solo
+                # recording_canceled).
+                self.input_manager.recording_started.connect(
+                    lambda: self.context_collector.set_ptt_active(True))
+                self.input_manager.recording_stopped.connect(
+                    lambda: self.context_collector.set_ptt_active(False))
+                self.input_manager.recording_canceled.connect(
+                    lambda: self.context_collector.set_ptt_active(False))
+            except Exception as e:
+                logger.error("❌ [MAIN] No se pudo iniciar el recolector de "
+                             "contexto: %s", e, exc_info=True)
+
         logger.info("✅ [MAIN] AssistantApp inicializada")
+
+    def _stop_context_collector(self) -> None:
+        if self.context_collector is not None:
+            try:
+                self.context_collector.stop()
+            except Exception as e:
+                logger.error("❌ [MAIN] Error deteniendo el recolector de "
+                             "contexto: %s", e, exc_info=True)
 
     # ------------------------------------------------------------------ setup
 

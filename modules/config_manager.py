@@ -9,6 +9,13 @@ Carga en cascada (cada capa sobrescribe a la anterior):
 config.local.json está gitignored y es donde viven los secretos (api_key).
 save() reparte automáticamente: las claves sensibles van a config.local.json
 y el resto a config.json, siempre con escritura atómica (.tmp + os.replace).
+
+Campos del timeline de contexto (fases A-D): timeline_enabled,
+timeline_retention_hours, ocr_interval_seconds, ocr_max_chars (recolectores);
+meeting_detection_enabled, meeting_poll_seconds, meeting_source_apps,
+meeting_segment_seconds, meeting_rms_threshold (audio de reuniones);
+mcp_timeline_enabled (tools del timeline para el LLM). Se editan en el JSON;
+setup.py no tiene UI para ellos (MVP).
 """
 
 import os
@@ -45,6 +52,19 @@ DEFAULTS: Dict[str, Any] = {
     "whisper_threads": 4,
     "tts_model": "fp32",  # variante Kokoro: "fp32" (más rápido en CPUs sin VNNI) | "int8"
     "gemini_model": "gemini-2.0-flash",
+    # Contexto en timeline (SQLite + recolectores pasivos, fases A/B).
+    "timeline_enabled": True,
+    "timeline_retention_hours": 72,
+    "ocr_interval_seconds": 12,
+    "ocr_max_chars": 4000,
+    # Audio de reuniones (fase C: Discord en canal de voz).
+    "meeting_detection_enabled": True,
+    "meeting_poll_seconds": 5,
+    "meeting_source_apps": ["discord"],  # futuro: teams, zoom
+    "meeting_segment_seconds": 8,
+    "meeting_rms_threshold": 0.01,  # RMS float32 [-1,1] bajo el cual es silencio
+    # Tools del timeline para el LLM vía MCP (fase D).
+    "mcp_timeline_enabled": True,
 }
 
 

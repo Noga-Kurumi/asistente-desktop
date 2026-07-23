@@ -44,7 +44,13 @@ class FakeModels:
         outcome = self.script[min(self.calls - 1, len(self.script) - 1)]
         if outcome != "OK":
             raise outcome
-        return iter([SimpleNamespace(text="Hola. "), SimpleNamespace(text="Todo bien.")])
+        return iter([_text_chunk("Hola. "), _text_chunk("Todo bien.")])
+
+
+def _text_chunk(text):
+    """Chunk con la forma real del SDK: candidates[0].content.parts[0].text."""
+    return SimpleNamespace(candidates=[SimpleNamespace(
+        content=SimpleNamespace(parts=[SimpleNamespace(text=text, function_call=None)]))])
 
 
 def make_provider(script):

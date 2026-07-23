@@ -32,6 +32,13 @@ REQUIRED_IMPORTS = [
     ("mss", "mss"),
     ("pynput", "pynput"),
     ("requests", "requests"),
+    # Contexto timeline: recolectores (A/B), meeting audio (C) y MCP (D).
+    ("win32gui", "pywin32"),
+    ("psutil", "psutil"),
+    ("winsdk", "winsdk"),
+    ("pyaudiowpatch", "PyAudioWPatch"),
+    ("pycaw", "pycaw"),
+    ("mcp", "mcp"),
 ]
 
 logger = logging.getLogger(__name__)
@@ -98,6 +105,22 @@ def notify_user(title, message):
 
 
 def main():
+    # Modo congelado (PyInstaller): todo viene empaquetado; no hay venv que
+    # crear ni dependencias que instalar.
+    if getattr(sys, "frozen", False):
+        from modules.log_setup import setup_logging
+        setup_logging()
+        logger.info("✅ [LAUNCH] Modo ejecutable (PyInstaller), dependencias empaquetadas")
+        try:
+            import main as main_module
+            main_module.run_app()
+        except Exception as e:
+            logger.error("❌ [LAUNCH] Error fatal al arrancar: %s", e, exc_info=True)
+            notify_user("Error al arrancar el asistente",
+                        f"{e}\n\nRevisá logs/asistente.log para más detalle.")
+            sys.exit(1)
+        return
+
     # 1. Si NO estamos en el venv, tenemos que entrar.
     if not is_in_venv():
         if not os.path.exists(get_venv_python()):

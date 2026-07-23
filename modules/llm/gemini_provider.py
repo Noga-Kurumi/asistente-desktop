@@ -38,6 +38,56 @@ MAX_RETRIES = 3
 RETRY_BACKOFF_S = (1, 2, 4)
 RETRYABLE_HTTP_CODES = frozenset({429, 503})
 
+# Function calling (Fase D): rondas máximas tool→respuesta→tool por query.
+MAX_TOOL_ROUNDS = 3
+
+# Declaraciones de las tools del timeline (contrato con Gemini; la ejecución
+# la hace tool_executor inyectado por api_brain — MCP del timeline).
+TIMELINE_TOOLS = [
+    types.FunctionDeclaration(
+        name="search_timeline_by_keywords",
+        description=(
+            "Busca en el timeline de actividad del usuario (apps que usó, texto "
+            "visible en pantalla vía OCR, portapapeles, audio de reuniones "
+            "transcrito) por palabras clave. Usala cuando la consulta NO tenga "
+            "una franja horaria clara."),
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "query": types.Schema(
+                    type=types.Type.STRING,
+                    description="Palabras clave a buscar (texto libre, en español)."),
+                "limit": types.Schema(
+                    type=types.Type.INTEGER,
+                    description="Máximo de registros a devolver (default 10)."),
+            },
+            required=["query"],
+        ),
+    ),
+    types.FunctionDeclaration(
+        name="get_timeline_by_time_range",
+        description=(
+            "Devuelve la actividad del usuario en una franja horaria concreta "
+            "(qué hizo entre dos horas). Usala cuando la consulta mencione horas "
+            "o franjas ('esta mañana', 'de 9 a 10')."),
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "start_time": types.Schema(
+                    type=types.Type.STRING,
+                    description="Hora de inicio: 'HH:MM' (hoy) o ISO 'YYYY-MM-DDTHH:MM'."),
+                "end_time": types.Schema(
+                    type=types.Type.STRING,
+                    description="Hora de fin: 'HH:MM' (hoy) o ISO 'YYYY-MM-DDTHH:MM'."),
+                "limit": types.Schema(
+                    type=types.Type.INTEGER,
+                    description="Máximo de registros (default 50)."),
+            },
+            required=["start_time", "end_time"],
+        ),
+    ),
+]
+
 
 class GeminiProvider(LLMProvider):
     """Proveedor Gemini. Sin I/O de red en __init__ (cliente perezoso)."""
@@ -48,6 +98,10 @@ class GeminiProvider(LLMProvider):
         self._api_key = api_key
         self._model = model
         self._client: Optional[genai.Client] = None
+        # Function calling (Fase D): ejecutor (name, args) -> str inyectado por
+        # api_brain (modules/timeline_mcp_server.call_timeline_tool). None =
+        # sin tools, comportamiento idéntico al de siempre.
+        self.tool_executor: Optional[Callable[[str, dict], str]] = None
 
     def _get_client(self) -> genai.Client:
         if not self._api_key or not self._api_key.strip():
@@ -69,27 +123,73 @@ class GeminiProvider(LLMProvider):
         splitter = SentenceSplitter()
         full_text_parts: List[str] = []
 
+        # Bucle manual de function calling (google-genai 2.10 no trae AFC en
+        # streaming): mientras el modelo emita function_call, se ejecuta la
+        # tool y se reenvía la conversación; el stream de texto sigue fluyendo
+        # por on_sentence en cada ronda. Acotado a MAX_TOOL_ROUNDS.
+        for round_n in range(MAX_TOOL_ROUNDS + 1):
+            tool_calls = self._stream_with_retry(
+                client, contents, system_prompt, splitter, full_text_parts, on_sentence)
+            if not tool_calls or self.tool_executor is None or round_n == MAX_TOOL_ROUNDS:
+                break
+            logger.info("🔧 [GEMINI] %d function call(s) solicitadas (ronda %d)",
+                        len(tool_calls), round_n + 1)
+            contents.append(types.Content(
+                role="model",
+                parts=[types.Part(function_call=fc) for fc in tool_calls]))
+            response_parts = []
+            for fc in tool_calls:
+                args = dict(fc.args or {})
+                logger.info("🔧 [GEMINI] Ejecutando tool %s(%s)", fc.name, args)
+                result = self.tool_executor(fc.name, args)
+                response_parts.append(types.Part.from_function_response(
+                    name=fc.name, response={"result": result}))
+            contents.append(types.Content(role="user", parts=response_parts))
+
+        for sentence in splitter.flush():
+            on_sentence(sentence)
+        return "".join(full_text_parts)
+
+    def _stream_with_retry(
+        self,
+        client: genai.Client,
+        contents: List[types.Content],
+        system_prompt: str,
+        splitter: SentenceSplitter,
+        full_text_parts: List[str],
+        on_sentence: SentenceCallback,
+    ) -> List[types.FunctionCall]:
+        """Una ronda de streaming con reintentos ante 429/503.
+
+        Devuelve las function calls pedidas por el modelo en esta ronda
+        (vacía si respondió solo texto). El flush del splitter lo hace
+        stream_reply al final de TODAS las rondas.
+        """
+        config_kwargs = dict(
+            system_instruction=system_prompt,
+            max_output_tokens=1000,
+            temperature=0.7,
+        )
+        if self.tool_executor is not None:
+            config_kwargs["tools"] = [types.Tool(function_declarations=TIMELINE_TOOLS)]
+
         for attempt in range(MAX_RETRIES + 1):
+            tool_calls: List[types.FunctionCall] = []
             try:
                 stream = client.models.generate_content_stream(
                     model=self._model,
                     contents=contents,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_prompt,
-                        max_output_tokens=1000,
-                        temperature=0.7,
-                    ),
+                    config=types.GenerateContentConfig(**config_kwargs),
                 )
                 for chunk in stream:
-                    text = chunk.text or ""
+                    tool_calls.extend(self._chunk_function_calls(chunk))
+                    text = self._chunk_text(chunk)
                     if not text:
                         continue
                     full_text_parts.append(text)
                     for sentence in splitter.feed(text):
                         on_sentence(sentence)
-                for sentence in splitter.flush():
-                    on_sentence(sentence)
-                return "".join(full_text_parts)
+                return tool_calls
             except LLMError:
                 raise
             except Exception as e:
@@ -110,6 +210,30 @@ class GeminiProvider(LLMProvider):
         """True si el error es transitorio (servidor saturado o rate limit)."""
         return (isinstance(exc, genai_errors.APIError)
                 and getattr(exc, "code", None) in RETRYABLE_HTTP_CODES)
+
+    @staticmethod
+    def _chunk_text(chunk) -> str:
+        """Texto de un chunk, ignorando parts no-texto (function_call)."""
+        texts = []
+        for cand in (getattr(chunk, "candidates", None) or []):
+            content = getattr(cand, "content", None)
+            for part in (getattr(content, "parts", None) or []):
+                text = getattr(part, "text", None)
+                if text:
+                    texts.append(text)
+        return "".join(texts)
+
+    @staticmethod
+    def _chunk_function_calls(chunk) -> List["types.FunctionCall"]:
+        """Function calls de un chunk (parts con function_call)."""
+        calls = []
+        for cand in (getattr(chunk, "candidates", None) or []):
+            content = getattr(cand, "content", None)
+            for part in (getattr(content, "parts", None) or []):
+                fc = getattr(part, "function_call", None)
+                if fc is not None and getattr(fc, "name", None):
+                    calls.append(fc)
+        return calls
 
     @staticmethod
     def _build_contents(

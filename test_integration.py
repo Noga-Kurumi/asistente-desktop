@@ -129,6 +129,10 @@ main.AssistantBrain = StubBrain
 main.AssistantTTS = StubTTS
 main.AvatarWindow = lambda: StubAvatar()
 
+# El recolector de contexto no se prueba aca (hooks Win32 reales): desactivado.
+from modules.config_manager import get_config
+get_config().update({"timeline_enabled": False})
+
 assistant = main.AssistantApp(app)
 vim = assistant.input_manager
 sm = assistant.sm

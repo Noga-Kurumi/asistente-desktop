@@ -122,6 +122,10 @@ class StubAvatar(QObject):
 main.AssistantAudioCore = StubAudioCore
 main.AvatarWindow = lambda: StubAvatar()
 
+# El recolector de contexto no se prueba aca (hooks Win32 reales): desactivado.
+from modules.config_manager import get_config
+get_config().update({"timeline_enabled": False})
+
 import modules.api_brain as api_brain_module
 
 main.AssistantBrain = lambda: api_brain_module.AssistantBrain(provider=FakeProvider())

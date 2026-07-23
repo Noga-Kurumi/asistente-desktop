@@ -188,3 +188,10 @@ models/ggml-small.bin
 # Config local con API keys
 config.local.json
 *.bin
+
+# Base de datos del timeline de contexto (fases A/B)
+data/
+
+# Build de PyInstaller (fase F; el .spec sí se versiona)
+build/
+dist/

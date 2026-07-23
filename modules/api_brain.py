@@ -56,6 +56,19 @@ class AssistantBrain(QObject):
             provider = create_provider(self.config.as_dict())
         self.provider = provider
 
+        # Tools del timeline vía MCP (Fase D): se inyecta el ejecutor al
+        # provider (function calling en gemini_provider). Errores atrapados:
+        # si el MCP no está disponible, el asistente sigue sin tools.
+        if self.config.get("mcp_timeline_enabled", True):
+            try:
+                from modules.timeline_mcp_server import call_timeline_tool
+
+                self.provider.tool_executor = call_timeline_tool
+                logger.info("✅ [BRAIN] Tools del timeline activas (MCP en-proceso)")
+            except Exception as e:
+                logger.error("❌ [BRAIN] No se pudieron activar las tools del "
+                             "timeline: %s", e, exc_info=True)
+
         self._history_lock = threading.Lock()
         self._message_history: List[Dict[str, str]] = []
 
@@ -80,9 +93,11 @@ class AssistantBrain(QObject):
         Actualmente puedes ver la pantalla principal del usuario.
 
         REGLAS ESTRICTAS:
-        1. PERSONA: Habla íntegramente en español neutro. NO uses modismos ni jerga regional. Mantén un tono directo, natural y profesional.
-        2. IDENTIDAD: Tu nombre es {avatar_name}. Puedes presentarte y referirte a ti mismo por ese nombre cuando sea apropiado.
-        3. FORMATO: NO uses Markdown complejo (ni negritas ni bloques de código) porque tu respuesta será leída en voz alta por un motor TTS. Habla con naturalidad.
+        1. BREVEDAD Y EFICACIA (MÁXIMA PRIORIDAD): Sé ultra conciso y ve directo al grano. Responde exactamente lo que se te pidió de forma clara y precisa. Elimina introducciones, saludos o frases de relleno.
+        2. SIN DETALLES EXTRAS: NUNCA des explicaciones largas, teoría o rodeos sobre preguntas técnicas a menos que {username} te pida explícitamente profundizar, detallar o explicar el porqué. Si la respuesta cabe en una o dos oraciones, usa solo eso.
+        3. FORMATO TTS: Tu respuesta será leída en voz alta por un motor de voz. NO uses ningún tipo de Markdown (nada de negritas, viñetas, guiones ni bloques de código). Habla de forma fluida y natural.
+        4. PERSONA E IDENTIDAD: Tu nombre es {avatar_name}. Habla en español neutro, sin modismos ni jerga regional. Mantén un tono profesional, directo y al punto.
+        5. TIMELINE: Tienes 2 tools sobre el timeline de actividad del usuario (apps que usó, texto visible en su pantalla, portapapeles y audio de reuniones transcrito): search_timeline_by_keywords (por palabras clave, cuando NO hay franja horaria) y get_timeline_by_time_range (cuando menciona horas o franjas, ej. "esta mañana", "de 9 a 10"). Úsalas cuando te pregunten qué estuvo haciendo, qué vio, qué copió o qué se habló en una reunión. Responde solo con lo que digan los registros; si no hay resultados, dilo sin inventar.
 
         INSTRUCCIONES PERSONALIZADAS DEL USUARIO:
         {custom_inst if custom_inst else "Ninguna."}
@@ -210,9 +225,20 @@ class AssistantBrain(QObject):
                 self.text_chunk_ready.emit(sentence)
 
         try:
+            # Fecha/hora actual por query (dinámica): el modelo la usa para
+            # resolver franjas relativas ("esta mañana") en las tools de timeline.
+            from datetime import datetime
+
+            ahora = datetime.now().strftime("%d/%m/%Y %H:%M")
+            system_prompt = (
+                self.system_prompt
+                + f"\n        FECHA Y HORA ACTUAL: {ahora} (hora local). "
+                "Úsala como referencia para resolver franjas relativas como "
+                "'esta mañana' o 'ayer a la tarde' al llamar a las tools de timeline."
+            )
             full_text = self.provider.stream_reply(
                 messages=self._history_snapshot(),
-                system_prompt=self.system_prompt,
+                system_prompt=system_prompt,
                 image_bytes=image_bytes,
                 on_sentence=emit_sentence,
             )
