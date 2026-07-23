@@ -43,6 +43,7 @@ DEFAULTS: Dict[str, Any] = {
     "whisper_model": "tiny",
     "whisper_quantization": "q5_1",
     "whisper_threads": 4,
+    "tts_model": "fp32",  # variante Kokoro: "fp32" (más rápido en CPUs sin VNNI) | "int8"
     "gemini_model": "gemini-2.0-flash",
 }
 

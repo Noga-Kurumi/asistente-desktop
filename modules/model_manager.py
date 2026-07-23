@@ -3,7 +3,8 @@
 Modelos gestionados:
 - Whisper ggml: models/ggml-{modelo}[-{cuantiz}].bin desde el repo
   ggerganov/whisper.cpp de HuggingFace.
-- Kokoro TTS: kokoro-v1.0.int8.onnx y voices-v1.0.bin en la raíz del repo.
+- Kokoro TTS: kokoro-v1.0.int8.onnx (o kokoro-v1.0.onnx si tts_model="fp32")
+  y voices-v1.0.bin en la raíz del repo.
   NOTA DE FUENTE (verificada 2026-07-22 contra la API de HF): el repo
   onnx-community/Kokoro-82M-ONNX NO publica esos nombres de archivo (tiene
   onnx/model_*.onnx y voces sueltas en voices/*.bin, sin un voices-v1.0.bin
@@ -133,17 +134,26 @@ def ensure_models(config: Mapping[str, Any]) -> List[str]:
         else:
             logger.error("❌ [MODELS] No se pudo descargar %s", whisper_name)
 
-    # --- Kokoro ONNX (el .onnx completo también vale; int8 es el fallback) ---
+    # --- Kokoro ONNX: se descarga la variante pedida por tts_model ---
+    # (si ya hay ALGUNA variante en disco no se descarga nada: tts_core cae
+    # a la disponible con warning).
     kokoro_full = os.path.join(BASE_DIR, "kokoro-v1.0.onnx")
     kokoro_int8 = os.path.join(BASE_DIR, "kokoro-v1.0.int8.onnx")
     if not os.path.exists(kokoro_full) and not os.path.exists(kokoro_int8):
-        logger.info("⬇️ [MODELS] Falta el modelo Kokoro, descargando int8...")
-        urls = [
-            f"{KOKORO_GH_RELEASE}/kokoro-v1.0.int8.onnx",
-            f"{KOKORO_HF_BASE}/onnx/model_quantized.onnx",  # equivalente int8 en HF
-        ]
-        if _download_first_available(urls, kokoro_int8):
-            downloaded.append(kokoro_int8)
+        prefer = str(config.get("tts_model", "int8"))
+        if prefer == "fp32":
+            wanted, urls = kokoro_full, [
+                f"{KOKORO_GH_RELEASE}/kokoro-v1.0.onnx",
+                f"{KOKORO_HF_BASE}/onnx/model.onnx",  # fp32 en HF
+            ]
+        else:
+            wanted, urls = kokoro_int8, [
+                f"{KOKORO_GH_RELEASE}/kokoro-v1.0.int8.onnx",
+                f"{KOKORO_HF_BASE}/onnx/model_quantized.onnx",  # equivalente int8 en HF
+            ]
+        logger.info("⬇️ [MODELS] Falta el modelo Kokoro (%s), descargando...", prefer)
+        if _download_first_available(urls, wanted):
+            downloaded.append(wanted)
         else:
             logger.error("❌ [MODELS] No se pudo descargar el modelo Kokoro")
 

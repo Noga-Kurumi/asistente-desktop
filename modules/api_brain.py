@@ -191,8 +191,10 @@ class AssistantBrain(QObject):
             image_bytes = self._captured_image
 
         self._append_history("user", user_prompt)
+        sentence_count = 0
 
         def emit_sentence(sentence: str) -> None:
+            nonlocal sentence_count
             if not self._is_current(generation):
                 return  # generación obsoleta: descartar emisiones
             point_match = POINT_PATTERN.search(sentence)
@@ -202,6 +204,9 @@ class AssistantBrain(QObject):
                 # Quitar el tag y colapsar los espacios que deja.
                 sentence = " ".join(POINT_PATTERN.sub("", sentence).split())
             if sentence:
+                sentence_count += 1
+                logger.info("🧠 [BRAIN] Oración %d del LLM: '%.60s'",
+                            sentence_count, sentence)
                 self.text_chunk_ready.emit(sentence)
 
         try:

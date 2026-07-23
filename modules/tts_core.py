@@ -8,22 +8,36 @@ Cambios de interfaz respecto a la versión anterior:
   Visemas posibles: 'sil', 'aa', 'e', 'ih', 'oh', 'ou'.
 
 - Síntesis en streaming: se usa Kokoro.create_stream (kokoro-onnx >= 0.4),
-  que entrega el audio por lotes de fonemas. Cada lote se reproduce en cuanto
-  se sintetiza (sd.play/sd.wait por lote) y se emite un text_to_speak por lote
-  con su propia timeline (local a ese audio), así el lip sync del JS queda
-  alineado lote a lote. Para oraciones cortas (1 solo lote, lo habitual) el
-  comportamiento es idéntico al create() de antes. Si el paquete instalado no
-  tiene create_stream, se cae a create() de una sola pieza.
+  que entrega el audio por lotes de fonemas. Si el paquete instalado no tiene
+  create_stream, se cae a create() de una sola pieza.
+
+- Pipeline productor-consumidor (anti-pausas entre frases), dos hilos:
+
+      _text_queue → [hilo SINTETIZADOR] → _audio_queue → [hilo REPRODUCTOR]
+
+  El sintetizador convierte cada texto en lotes de audio (con su timeline de
+  visemas ya calculada) y los deposita en una cola acotada (maxsize=4 lotes):
+  la síntesis de la oración N+1 ocurre MIENTRAS suena la N, y el bloqueo por
+  cola llena es el backpressure natural para no acumular RAM en respuestas
+  largas. El reproductor hace sd.play/sd.wait por lote y emite text_to_speak
+  AL REPRODUCIR (no al sintetizar), así el lip sync del JS sigue alineado con
+  lo que suena. Por cada texto el sintetizador deposita además un centinela
+  "end" (incluso si la síntesis falla) para que el reproductor nunca espere
+  lotes que no llegarán.
+
+- Coordinación de fin de turno (anti-parpadeo): pending_count cuenta TEXTOS
+  encolados que aún no terminaron de sonar (esperando síntesis + en síntesis
+  + lotes esperando sonar + el que suena). queue_drained se emite cuando ese
+  contador llega a 0 (verdad del reproductor Y del sintetizador sin trabajo).
+  clear_queue() vacía la cola de textos + sd.stop() e invalida por época la
+  cola de audio y lo que estuviera a medio sintetizar.
 
 - process_text_async() NUNCA descarta texto: si el motor aún no está listo,
   el texto queda encolado y se sintetiza cuando termine la inicialización.
 
-- Coordinación de fin de turno (anti-parpadeo): pending_count expone cuántos
-  textos quedan por sonar (cola + el actual) y clear_queue() cancela lo
-  pendiente cuando el usuario empieza una grabación nueva.
-
 - Voz por defecto: config.active_voice (fallback 'ef_dora', español).
   lang='es' fijo, consistente con el idioma del asistente.
+  Modelo según config.tts_model ("int8" | "fp32", default "int8").
 """
 
 import asyncio
@@ -150,13 +164,25 @@ class AssistantTTS(QObject):
         # descartan: se sintetizan en cuanto el motor está listo.
         self._ready_event = threading.Event()
 
-        # Cola serializada: un único hilo worker reproduce los textos en orden,
-        # evitando que sd.play() de dos textos se solapen o se corten.
-        self._queue: "queue.Queue[tuple]" = queue.Queue()
-        self._busy = False  # True mientras el worker sintetiza/reproduce un texto
+        # Pipeline productor-consumidor (ver docstring del módulo):
+        #   _text_queue → [hilo sintetizador] → _audio_queue → [hilo reproductor]
+        self._text_queue: "queue.Queue[tuple]" = queue.Queue()
+        # Acotada: backpressure natural para no acumular RAM en respuestas largas.
+        self._audio_queue: "queue.Queue[tuple]" = queue.Queue(maxsize=4)
         self._stop_event = threading.Event()
-        self._worker = threading.Thread(target=self._tts_worker, daemon=True, name="tts-worker")
-        self._worker.start()
+
+        # Verdad del trabajo pendiente (thread-safe): textos encolados que aún
+        # no terminaron de sonar. _epoch invalida lo encolado al clear_queue.
+        self._state_lock = threading.Lock()
+        self._pending_texts = 0
+        self._epoch = 0
+
+        self._synth_thread = threading.Thread(
+            target=self._synth_worker, daemon=True, name="tts-synth")
+        self._play_thread = threading.Thread(
+            target=self._play_worker, daemon=True, name="tts-player")
+        self._synth_thread.start()
+        self._play_thread.start()
 
         threading.Thread(target=self._init_engine, daemon=True, name="tts-init").start()
 
@@ -166,23 +192,33 @@ class AssistantTTS(QObject):
 
     @property
     def pending_count(self) -> int:
-        """Textos que aún falta sonar: en cola + el que está en curso (0 = idle).
+        """Textos encolados que aún no terminaron de sonar (0 = todo sonó).
 
-        Lo usa main.py para decidir el fin real del turno (no esconder el
-        avatar ni desbloquear el input entre oraciones de una misma respuesta).
+        Cuenta textos, no lotes: incluye los que esperan síntesis, el que se
+        está sintetizando, los lotes ya sintetizados esperando sonar y el que
+        suena ahora. main.py cierra el turno solo cuando llega a 0.
         """
-        return self._queue.qsize() + (1 if self._busy else 0)
+        with self._state_lock:
+            return self._pending_texts
 
     def clear_queue(self) -> None:
-        """Cancela lo encolado y la reproducción en curso.
+        """Cancela TODO lo pendiente (nuevo turno del usuario, MVP).
 
-        Se llama cuando el usuario inicia una grabación nueva a mitad de una
-        respuesta (MVP: el audio viejo no tiene sentido seguir sonando).
+        Vacia la cola de TEXTOS (lo no sintetizado jamás se sintetiza) y frena
+        la reproducción en curso con sd.stop(). La cola de audio NO se vacía:
+        se invalida por época y el reproductor descarta los lotes sin sonarlos
+        (es acotada: se drena al instante), así el centinela "end" del texto
+        interrumpido llega y su speech_ended se emite igual (contrato). Lo que
+        el sintetizador tenga a medias queda invalidado y se descarta sin
+        tocar el contador (ya reseteado acá).
         """
-        with self._queue.mutex:
-            self._queue.queue.clear()
+        with self._state_lock:
+            self._epoch += 1
+            self._pending_texts = 0
+        with self._text_queue.mutex:
+            self._text_queue.queue.clear()
         try:
-            sd.stop()  # sd.wait() del worker retorna al instante
+            sd.stop()  # sd.wait() del reproductor retorna al instante
         except Exception as e:
             logger.warning("⚠️ [TTS] Error en sd.stop() al limpiar la cola: %s", e)
 
@@ -193,22 +229,39 @@ class AssistantTTS(QObject):
     def _init_engine(self) -> None:
         inicio = time.perf_counter()
 
-        # Prioridad al modelo normal, fallback al cuantizado.
-        modelo_a_usar = self.model_path
-        if not os.path.exists(self.model_path) and os.path.exists(self.model_quant_path):
-            modelo_a_usar = self.model_quant_path
+        # Variante del modelo según config (tts_model: "int8" | "fp32"),
+        # con fallback a la otra si falta la pedida.
+        prefer = str(self.config.get("tts_model", "int8") or "int8")
+        candidatos = ([self.model_quant_path, self.model_path] if prefer == "int8"
+                      else [self.model_path, self.model_quant_path])
+        modelo_a_usar = next((p for p in candidatos if os.path.exists(p)), None)
 
-        if not os.path.exists(modelo_a_usar) or not os.path.exists(self.voices_path):
+        if modelo_a_usar is None or not os.path.exists(self.voices_path):
             logger.error("❌ [TTS] Modelo o voces no encontrados: %s, %s",
-                         modelo_a_usar, self.voices_path)
+                         candidatos[0], self.voices_path)
             return
+        if modelo_a_usar != candidatos[0]:
+            logger.warning("⚠️ [TTS] tts_model='%s' pero falta %s; usando %s",
+                           prefer, os.path.basename(candidatos[0]),
+                           os.path.basename(modelo_a_usar))
 
         try:
             self.kokoro = Kokoro(modelo_a_usar, self.voices_path)
             fin = time.perf_counter()
-            self._ready_event.set()
             logger.info("✅ [TTS] Motor Kokoro listo en %.2fs (%s)",
                         fin - inicio, os.path.basename(modelo_a_usar))
+            # Pre-calentar: la primera síntesis real pagaba el warm-up de
+            # ONNX/espeak (observado ~11s de espera en la primera frase).
+            warm = time.perf_counter()
+            try:
+                voice = self.config.get("active_voice", DEFAULT_VOICE) or DEFAULT_VOICE
+                for _ in self._stream_chunks("Hola.", voice):
+                    pass
+                logger.info("🔥 [TTS] Warm-up completado en %.2fs",
+                            time.perf_counter() - warm)
+            except Exception as e:
+                logger.warning("⚠️ [TTS] Warm-up falló (no crítico): %s", e)
+            self._ready_event.set()
         except Exception as e:
             logger.error("❌ [TTS] Error inicializando Kokoro: %s", e, exc_info=True)
 
@@ -221,31 +274,103 @@ class AssistantTTS(QObject):
             voice = self.config.get("active_voice", DEFAULT_VOICE) or DEFAULT_VOICE
         if not self.is_ready:
             logger.info("⏳ [TTS] Motor no listo, texto encolado a la espera")
-        self._queue.put((text, voice))
+        with self._state_lock:
+            self._pending_texts += 1
+            epoch = self._epoch
+        self._text_queue.put((text, voice, epoch))
 
-    def _tts_worker(self) -> None:
-        """Worker único: consume la cola y reproduce cada texto en orden."""
+    def _synth_worker(self) -> None:
+        """Hilo sintetizador: consume textos y deposita lotes de audio listos.
+
+        Por cada texto deposita 0..N items ("chunk", payload) y SIEMPRE un
+        centinela ("end", None) — incluso si la síntesis falla — para que el
+        reproductor nunca quede esperando lotes que no llegarán.
+        """
         while not self._stop_event.is_set():
             try:
-                text, voice = self._queue.get(timeout=0.5)
+                text, voice, epoch = self._text_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
-            self._busy = True
             try:
+                with self._state_lock:
+                    if epoch != self._epoch:
+                        continue  # texto cancelado por clear_queue
                 # Esperar al motor (con timeout para seguir siendo cancelable).
                 while not self._ready_event.wait(timeout=0.5):
                     if self._stop_event.is_set():
                         return
-                self._generate_and_play(text, voice)
+                t0 = time.perf_counter()
+                audio_secs = 0.0
+                for samples, sample_rate in self._stream_chunks(text, voice):
+                    timeline = compute_viseme_timeline(
+                        np.ascontiguousarray(samples, dtype=np.float32), sample_rate
+                    )
+                    duration = len(samples) / sample_rate
+                    audio_secs += duration
+                    # Bloqueo por cola llena = backpressure natural.
+                    self._audio_queue.put(
+                        (epoch, "chunk", (text, samples, sample_rate, timeline, duration)))
+                synth_secs = time.perf_counter() - t0
+                logger.info(
+                    "🗣️ [TTS] Síntesis '%.40s': %.2fs para %.2fs de audio (RTF %.2f)",
+                    text, synth_secs, audio_secs,
+                    synth_secs / audio_secs if audio_secs > 0 else 0.0)
             except Exception as e:
-                logger.error("❌ [TTS] Error en worker: %s", e, exc_info=True)
+                logger.error("❌ [TTS] Error sintetizando '%.40s': %s", text, e, exc_info=True)
             finally:
-                self._busy = False
-                self._queue.task_done()
-                # Avisar DESPUÉS de task_done: si ya no queda nada, este es el
-                # punto real de fin de audio del turno.
-                if self._queue.empty():
-                    self.queue_drained.emit()
+                self._audio_queue.put((epoch, "end", None))
+                self._text_queue.task_done()
+
+    def _play_worker(self) -> None:
+        """Hilo reproductor: suena los lotes en orden y emite las señales.
+
+        text_to_speak se emite AL REPRODUCIR (no al sintetizar) para que el
+        lip sync del JS siga alineado con lo que suena; speech_started al
+        primer lote de cada texto y speech_ended SIEMPRE una vez por texto que
+        empezó a sonar (incluido el interrumpido por clear_queue). Al terminar
+        un texto decrementa el pendiente; si llega a 0 emite queue_drained
+        (no queda NADA por sonar: el contador cubre ambas colas).
+        """
+        started = False
+        while not self._stop_event.is_set():
+            try:
+                epoch, kind, payload = self._audio_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            with self._state_lock:
+                stale = epoch != self._epoch
+            if stale:
+                # Item cancelado por clear_queue: se descarta sin decrementar
+                # (el contador ya se reseteó), pero el texto interrumpido a
+                # medio sonar cierra su señal igual.
+                if kind == "end" and started:
+                    self.speech_ended.emit()
+                    started = False
+                continue
+            try:
+                if kind == "chunk":
+                    text, samples, sample_rate, timeline, duration = payload
+                    self.text_to_speak.emit(text, duration, timeline)
+                    if not started:
+                        logger.info("▶️ [TTS] Reproduciendo '%.40s'", text)
+                        self.speech_started.emit()
+                        started = True
+                    sd.play(samples, sample_rate)
+                    sd.wait()
+                else:  # "end": último lote del texto ya sonó
+                    if started:
+                        logger.info("⏹️ [TTS] Fin de reproducción")
+                        self.speech_ended.emit()
+                        started = False
+                    with self._state_lock:
+                        self._pending_texts -= 1
+                        drained = self._pending_texts == 0
+                    if drained:
+                        self.queue_drained.emit()
+            except Exception as e:
+                logger.error("❌ [TTS] Error reproduciendo audio: %s", e, exc_info=True)
+            finally:
+                self._audio_queue.task_done()
 
     def _stream_chunks(
         self, text: str, voice: str
@@ -278,44 +403,11 @@ class AssistantTTS(QObject):
                 logger.warning("⚠️ [TTS] Error cerrando el executor del stream: %s", e)
             loop.close()
 
-    def _generate_and_play(self, text: str, voice: str) -> None:
-        """Sintetiza en streaming y reproduce cada lote en cuanto llega.
-
-        speech_started se emite una vez por texto (primer lote) y speech_ended
-        al terminar el último: main.py los usa para saber que hay audio en
-        curso sin confundir los lotes con el fin del turno.
-        """
-        started = False
-        try:
-            for samples, sample_rate in self._stream_chunks(text, voice):
-                timeline = compute_viseme_timeline(
-                    np.ascontiguousarray(samples, dtype=np.float32), sample_rate
-                )
-                audio_duration = len(samples) / sample_rate
-
-                # Un text_to_speak por lote: el JS reinicia su reloj con cada
-                # startSpeaking y la timeline (local al lote) queda sincronizada
-                # con el audio que está sonando.
-                self.text_to_speak.emit(text, audio_duration, timeline)
-
-                if not started:
-                    self.speech_started.emit()
-                    started = True
-                sd.play(samples, sample_rate)
-                sd.wait()
-
-            if started:
-                self.speech_ended.emit()
-
-        except Exception as e:
-            logger.error("❌ [TTS] Error generando/reproduciendo audio: %s", e, exc_info=True)
-            if started:
-                self.speech_ended.emit()
-
     def cleanup(self) -> None:
-        """Detiene el worker y cualquier reproducción en curso."""
-        # TODO(pendiente): cleanup puede quedar bloqueado en sd.wait(); revisar
-        # cuando se aborde el cierre limpio de la app.
+        """Frena los hilos (sintetizador y reproductor) y el audio en curso."""
+        # TODO(pendiente): cleanup puede quedar bloqueado en sd.wait() o en un
+        # put a la cola de audio llena; los hilos son daemon, así que el
+        # proceso igual puede salir. Revisar cuando se aborde el cierre limpio.
         self._stop_event.set()
         try:
             sd.stop()
