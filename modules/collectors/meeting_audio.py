@@ -40,12 +40,14 @@ dedicado (la captura nunca se bloquea por whisper).
 import logging
 import queue
 import threading
-import time
 from typing import List, Optional
 
 import numpy as np
 
 from modules.timeline_db import TimelineDB
+from modules.whisper_wrapper import FILTERED_MARKERS
+
+_FILTERED_UPPER = {m.upper() for m in FILTERED_MARKERS}
 
 logger = logging.getLogger(__name__)
 
@@ -368,10 +370,13 @@ class MeetingAudioCollector:
                 if model is None:
                     continue
                 audio = np.ascontiguousarray(audio, dtype=np.float32)
-                text = " ".join(seg.text for seg in model.transcribe(audio)).strip()
+                text = " ".join(
+                    seg.text for seg in model.transcribe(audio)
+                    if seg.text.strip().upper() not in _FILTERED_UPPER
+                ).strip()
                 # El buffer se descarta acá: solo el texto sigue adelante.
                 audio = None
-                if not text:
+                if not text or text.upper() in _FILTERED_UPPER:
                     continue
                 canal = "mic" if source == "audio_in" else "loopback"
                 if self.db.insert(source, "Discord", "voice channel", text):

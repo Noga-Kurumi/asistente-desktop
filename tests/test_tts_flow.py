@@ -5,6 +5,13 @@ App real: AssistantApp + AssistantTTS real (sd y Kokoro fakeados) +
 AssistantBrain real con provider fake de 3 oraciones. Avatar y audio_core
 stubeados. Sin audio real, sin red.
 """
+
+import os
+import sys
+
+# tests/ esta un nivel debajo de la raiz: que los imports del proyecto resuelvan.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import asyncio
 import os
 import time

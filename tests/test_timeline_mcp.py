@@ -6,6 +6,13 @@
    function_call → tool MCP real → respuesta final streameada.
 3. Smoke: el servidor MCP standalone por stdio responde list_tools.
 """
+
+import os
+import sys
+
+# tests/ esta un nivel debajo de la raiz: que los imports del proyecto resuelvan.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import asyncio
 import os
 import subprocess

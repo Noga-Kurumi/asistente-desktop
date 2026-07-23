@@ -20,7 +20,6 @@ import hashlib
 import io
 import logging
 import threading
-import time
 from typing import Optional
 
 from modules.collectors.window_change import get_foreground_window_info

@@ -3,6 +3,13 @@
 2. SetupWindow: get_gemini_models asincrono (ventana inmediata, combo se puebla
    cuando llega la respuesta, error logueado y combo con 'No se encontraron modelos').
 """
+
+import os
+import sys
+
+# tests/ esta un nivel debajo de la raiz: que los imports del proyecto resuelvan.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import os
 import time
 from types import SimpleNamespace

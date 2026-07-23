@@ -5,6 +5,13 @@ _flush_segment (descarte por silencio / encolado / flush corto / cola llena).
 SIN audio real ni whisper: la captura y la detección en Discord son prueba
 manual del usuario.
 """
+
+import os
+import sys
+
+# tests/ esta un nivel debajo de la raiz: que los imports del proyecto resuelvan.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import queue
 from types import SimpleNamespace
 

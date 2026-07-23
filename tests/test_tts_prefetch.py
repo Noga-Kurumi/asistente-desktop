@@ -7,6 +7,13 @@ Con Kokoro y sd fake (reproduccion controlada con eventos) demuestra:
 4. clear_queue interrumpe lo que suena, descarta lo sintetizado pendiente de
    sonar y resetea el contador; speech_ended del texto interrumpido se emite.
 """
+
+import os
+import sys
+
+# tests/ esta un nivel debajo de la raiz: que los imports del proyecto resuelvan.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import asyncio
 import os
 import threading

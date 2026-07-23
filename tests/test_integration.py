@@ -4,6 +4,13 @@ Hardware stubado: sounddevice.InputStream, pynput keyboard.Listener, y los
 modulos pesados (audio_core/api_brain/tts_core/avatar) se sustituyen por stubs
 con las mismas senales. Nada de audio real ni red.
 """
+
+import os
+import sys
+
+# tests/ esta un nivel debajo de la raiz: que los imports del proyecto resuelvan.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import os
 import sys
 import time

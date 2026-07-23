@@ -4,6 +4,13 @@ Insert de cada source, search_by_keywords (MATCH), get_by_time_range,
 cleanup_old_records borrando lo viejo y FTS sincronizada tras el delete.
 Usa una DB temporal (no toca data/timeline.db real).
 """
+
+import os
+import sys
+
+# tests/ esta un nivel debajo de la raiz: que los imports del proyecto resuelvan.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import os
 import tempfile
 import time

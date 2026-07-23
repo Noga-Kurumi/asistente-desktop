@@ -7,6 +7,13 @@ Casos:
 4. 401 (auth) -> LLMError(ERR_AUTH) SIN reintentos (1 sola llamada).
 5. El codigo llega hasta frases.json sin lista blanca que lo filtre.
 """
+
+import os
+import sys
+
+# tests/ esta un nivel debajo de la raiz: que los imports del proyecto resuelvan.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import json
 import os
 import time

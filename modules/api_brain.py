@@ -190,9 +190,6 @@ class AssistantBrain(QObject):
         worker = _BrainWorker(self, user_prompt)
         QThreadPool.globalInstance().start(worker)
 
-    # Alias compatible con el main.py actual.
-    process_query_async = submit_query
-
     def process_query(self, user_prompt: str) -> None:
         """Procesa una query de forma síncrona (ejecutar dentro de un QRunnable).
 

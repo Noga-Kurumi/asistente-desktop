@@ -72,3 +72,8 @@ cambiar `console=False` a `True` en `asistente.spec`.
 ## Créditos
 
 El avatar incluido se redistribuye con acreditación; ver `NOTICE`.
+
+## Tests
+
+Las suites viven en `tests/` y se corren desde la raíz:
+`.venv/Scripts/python.exe tests/test_timeline_db.py` (y así con cada `test_*.py`).

@@ -8,7 +8,7 @@ from pynput import keyboard
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                                 QLabel, QLineEdit, QTextEdit, QCheckBox, QPushButton,
                                 QComboBox, QMessageBox, QProgressBar)
-from PySide6.QtCore import Qt, QObject, Signal, QTimer, QRunnable, QThreadPool
+from PySide6.QtCore import QObject, Signal, QTimer, QRunnable, QThreadPool
 from PySide6.QtGui import QIcon
 
 # Configuración única vía config_manager (api_key se persiste en config.local.json)
@@ -328,6 +328,8 @@ class SetupWindow(QWidget):
                     if current_device is not None and i == current_device:
                         self.combo_audio.setCurrentIndex(self.combo_audio.count() - 1)
         except Exception as e:
+            logger.error("❌ [SETUP] Error enumerando dispositivos de audio: %s", e,
+                         exc_info=True)
             self.combo_audio.addItem("Error cargando dispositivos")
 
     def toggle_mic_test(self):

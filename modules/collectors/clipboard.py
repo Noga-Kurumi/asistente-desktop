@@ -90,7 +90,6 @@ class ClipboardCollector:
             logger.info("🛑 [CLIPBOARD] Listener de portapapeles detenido")
 
     def _wnd_proc(self, hwnd, msg, wparam, lparam):
-        import win32con
         import win32gui
 
         if msg == WM_CLIPBOARDUPDATE:
@@ -110,13 +109,12 @@ class ClipboardCollector:
 
     def _on_clipboard_update(self) -> None:
         import win32clipboard
-        import win32con
 
         text = None
         try:
             win32clipboard.OpenClipboard()
             if win32clipboard.IsClipboardFormatAvailable(CF_UNICODETEXT):
-                data = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+                data = win32clipboard.GetClipboardData(CF_UNICODETEXT)
                 if isinstance(data, str) and data.strip():
                     text = data.strip()
         finally:
